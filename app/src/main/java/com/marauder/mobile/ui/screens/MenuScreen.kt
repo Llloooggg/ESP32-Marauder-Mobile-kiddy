@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import com.marauder.mobile.data.Catalog
 import com.marauder.mobile.data.MenuAction
 import com.marauder.mobile.data.MenuItem
+import com.marauder.mobile.data.Tier
 import com.marauder.mobile.ui.components.LogoHeader
 import com.marauder.mobile.ui.components.MenuCard
 import com.marauder.mobile.ui.components.SectionLabel
@@ -69,7 +70,12 @@ fun MenuScreen(
     val name by vm.connectedName.collectAsState()
     val devStatus by vm.deviceStatus.collectAsState()
     val darkTheme by vm.darkTheme.collectAsState()
+    val info by vm.info.collectAsState()
     val connected = connStatus == UsbSerialManager.Status.CONNECTED
+
+    // Capability-gated items; HIGH-tier entries are grouped under a LAB header.
+    val visItems = remember(screen, info) { screen.itemsFor(info?.caps) }
+    val (normalItems, labItems) = remember(visItems) { visItems.partition { it.tier != Tier.HIGH } }
 
     var pendingConfirm by remember { mutableStateOf<MenuItem?>(null) }
 
@@ -141,7 +147,7 @@ fun MenuScreen(
                 item { SectionLabel("Main Menu", modifier = Modifier.padding(top = 6.dp)) }
             }
 
-            items(screen.items, key = { it.title }) { item ->
+            items(normalItems, key = { it.title }) { item ->
                 MenuCard(
                     item = item,
                     onClick = {
@@ -152,6 +158,22 @@ fun MenuScreen(
                         }
                     },
                 )
+            }
+
+            if (labItems.isNotEmpty()) {
+                item { SectionLabel("Lab · Active interference", modifier = Modifier.padding(top = 10.dp)) }
+                items(labItems, key = { it.title }) { item ->
+                    MenuCard(
+                        item = item,
+                        onClick = {
+                            if (item.dangerous && item.action is MenuAction.Send) {
+                                pendingConfirm = item
+                            } else {
+                                onItemClick(item)
+                            }
+                        },
+                    )
+                }
             }
 
             if (isRoot) {

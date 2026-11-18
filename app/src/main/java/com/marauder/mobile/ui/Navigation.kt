@@ -27,18 +27,31 @@ import com.marauder.mobile.data.MenuAction
 import com.marauder.mobile.data.MenuItem
 import com.marauder.mobile.ui.screens.AboutScreen
 import com.marauder.mobile.ui.screens.AnalyzerScreen
+import com.marauder.mobile.ui.screens.ApDetailScreen
 import com.marauder.mobile.ui.screens.ConnectScreen
 import com.marauder.mobile.ui.screens.ConsoleScreen
 import com.marauder.mobile.ui.screens.EvilPortalScreen
 import com.marauder.mobile.ui.screens.FlashScreen
+import com.marauder.mobile.ui.screens.HomeScreen
 import com.marauder.mobile.ui.screens.ListScreen
 import com.marauder.mobile.ui.screens.LiveActivityScreen
 import com.marauder.mobile.ui.screens.MenuScreen
+import com.marauder.mobile.ui.screens.MissionScreen
+import com.marauder.mobile.ui.screens.ScanScreen
 import com.marauder.mobile.usb.UsbSerialManager
 import com.marauder.mobile.vm.MarauderViewModel
 
+/**
+ * Route map. The product flow is connect → home → scan → ap index → mission id;
+ * the original command tree (menu subtree, live, analyzer, list) stays reachable
+ * from Home's Toolbox, so no firmware command becomes unreachable.
+ */
 private object Routes {
     const val CONNECT = "connect"
+    const val HOME = "home"
+    const val SCAN = "scan"
+    const val MISSION = "mission"
+    const val AP = "ap"
     const val MENU = "menu"
     const val LIST = "list"
     const val CONSOLE = "console"
@@ -47,7 +60,10 @@ private object Routes {
     const val ABOUT = "about"
     const val FLASH = "flash"
     const val EVIL_PORTAL = "evil_portal_screen"
+
     fun menu(id: String) = "$MENU/$id"
+    fun ap(index: Int) = "$AP/$index"
+    fun mission(id: Long) = "$MISSION/$id"
     fun list(type: ListType) = "$LIST/${type.name}"
     fun analyzer(kind: AnalyzerKind, command: String) = "$ANALYZER/${kind.name}/${Uri.encode(command)}"
     fun live(title: String, command: String) = "$LIVE/${Uri.encode(title)}/${Uri.encode(command)}"
@@ -70,6 +86,53 @@ fun AppRoot() {
 
             composable(Routes.CONNECT) {
                 ConnectScreen(vm, onOpenFlash = { nav.navigate(Routes.FLASH) })
+            }
+
+            composable(Routes.HOME) {
+                HomeScreen(
+                    vm = vm,
+                    onOpenScan = { nav.navigate(Routes.SCAN) },
+                    onOpenMission = { id -> nav.navigate(Routes.mission(id)) },
+                    onOpenMenu = { id -> nav.navigate(Routes.menu(id)) },
+                    onOpenConsole = { nav.navigate(Routes.CONSOLE) },
+                    onOpenFlash = { nav.navigate(Routes.FLASH) },
+                    onOpenAbout = { nav.navigate(Routes.ABOUT) },
+                    onDisconnect = { vm.disconnect() },
+                )
+            }
+
+            composable(Routes.SCAN) {
+                ScanScreen(
+                    vm = vm,
+                    onBack = { nav.popBackStack() },
+                    onOpenAp = { index -> nav.navigate(Routes.ap(index)) },
+                    onOpenMission = { id -> nav.navigate(Routes.mission(id)) },
+                )
+            }
+
+            composable(
+                route = "${Routes.AP}/{index}",
+                arguments = listOf(navArgument("index") { type = NavType.IntType }),
+            ) { entry ->
+                ApDetailScreen(
+                    apIndex = entry.arguments?.getInt("index") ?: -1,
+                    vm = vm,
+                    onBack = { nav.popBackStack() },
+                    onOpenMission = { id -> nav.navigate(Routes.mission(id)) },
+                    onOpenLive = { title, cmd -> nav.navigate(Routes.live(title, cmd)) },
+                    onOpenAnalyzer = { cmd, kind -> nav.navigate(Routes.analyzer(kind, cmd)) },
+                )
+            }
+
+            composable(
+                route = "${Routes.MISSION}/{id}",
+                arguments = listOf(navArgument("id") { type = NavType.LongType }),
+            ) { entry ->
+                MissionScreen(
+                    missionId = entry.arguments?.getLong("id") ?: -1L,
+                    vm = vm,
+                    onBack = { nav.popBackStack() },
+                )
             }
 
             composable(
@@ -151,7 +214,11 @@ fun AppRoot() {
     }
 }
 
-/** Steers the user to the connect screen or the main menu as the link goes up/down. */
+/**
+ * Steers the user between the connect screen and the product root as the link goes
+ * down/up. Missions survive navigation (they are supervised by the ViewModel), so
+ * only the connection itself forces a redirect here.
+ */
 @Composable
 private fun ConnectionGate(vm: MarauderViewModel, nav: NavHostController) {
     val status by vm.status.collectAsState()
@@ -162,7 +229,7 @@ private fun ConnectionGate(vm: MarauderViewModel, nav: NavHostController) {
         when (status) {
             UsbSerialManager.Status.CONNECTED -> {
                 if (currentRoute == Routes.CONNECT) {
-                    nav.navigate(Routes.menu(Catalog.ROOT)) {
+                    nav.navigate(Routes.HOME) {
                         popUpTo(Routes.CONNECT) { inclusive = true }
                         launchSingleTop = true
                     }
@@ -183,6 +250,7 @@ private fun ConnectionGate(vm: MarauderViewModel, nav: NavHostController) {
     }
 }
 
+/** Advanced-tree action routing: submenus, lists, analyzers and raw live commands. */
 private fun handleAction(
     item: MenuItem,
     nav: NavHostController,

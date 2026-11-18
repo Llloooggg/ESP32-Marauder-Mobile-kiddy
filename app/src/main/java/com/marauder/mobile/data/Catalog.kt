@@ -92,6 +92,9 @@ enum class ListType(val code: String, val title: String) {
 
 enum class AnalyzerKind { WIFI, BT, CHANNEL }
 
+/** Policy level of a command, shown by the UI as confirmation friction. */
+enum class Tier { SAFE, MODERATE, HIGH }
+
 /** Colour role for a menu entry, mirroring the firmware's on-screen TFT palette. */
 enum class Accent { WIFI, BLUETOOTH, GPS, DEVICE, NEUTRAL, SNIFFER, SCANNER, ATTACK, GENERAL, PRIMARY }
 
@@ -126,13 +129,23 @@ data class MenuItem(
     val accent: Accent,
     val action: MenuAction,
     val dangerous: Boolean = false,
-)
+    /** Defaults: dangerous entries at least need a confirm; explicit override allowed. */
+    val tier: Tier = if (dangerous) Tier.MODERATE else Tier.SAFE,
+    /** Firmware capability codes (from jsoninfo) this entry needs; empty = always. */
+    val requiresCaps: Set<String> = emptySet(),
+) {
+    /** Hide entries whose capabilities the connected board does not advertise. */
+    fun visibleFor(caps: List<String>?): Boolean =
+        caps == null || requiresCaps.isEmpty() || caps.containsAll(requiresCaps)
+}
 
 data class MenuScreen(
     val id: String,
     val title: String,
     val items: List<MenuItem>,
-)
+) {
+    fun itemsFor(caps: List<String>?): List<MenuItem> = items.filter { it.visibleFor(caps) }
+}
 
 /**
  * The whole navigable menu tree. Titles and ordering deliberately mirror the
@@ -179,7 +192,8 @@ object Catalog {
                     MenuItem("Beacon Sniff", "sniffbeacon", Icons.Filled.CellTower, Accent.SNIFFER, MenuAction.Send("sniffbeacon")),
                     MenuItem("Deauth Sniff", "sniffdeauth", Icons.Filled.WifiOff, Accent.SNIFFER, MenuAction.Send("sniffdeauth")),
                     MenuItem("Packet Count", "packetcount", Icons.Filled.Numbers, Accent.SNIFFER, MenuAction.Send("packetcount")),
-                    MenuItem("EAPOL/PMKID Scan", "sniffpmkid", Icons.Filled.Key, Accent.SNIFFER, MenuAction.Send("sniffpmkid")),
+                    MenuItem("EAPOL Listen (Passive)", "sniffpmkid · waits for traffic", Icons.Filled.Key, Accent.SNIFFER, MenuAction.Send("sniffpmkid")),
+                    MenuItem("Capture Handshake/PMKID", "sniffpmkid -d · sends deauth", Icons.Filled.Key, Accent.ATTACK, MenuAction.Send("sniffpmkid -d"), dangerous = true),
                     MenuItem("Raw Capture", "sniffraw", Icons.Filled.GraphicEq, Accent.SNIFFER, MenuAction.Send("sniffraw")),
                     MenuItem("Channel Analyzer", "Live channel graph", Icons.Filled.Insights, Accent.SNIFFER, MenuAction.OpenAnalyzer("analyzer -t wifi", AnalyzerKind.WIFI)),
                     MenuItem("Channel Summary", "Live channel bars", Icons.Filled.BarChart, Accent.SNIFFER, MenuAction.OpenAnalyzer("analyzer -t chan", AnalyzerKind.CHANNEL)),
@@ -188,7 +202,7 @@ object Catalog {
                     MenuItem("Detect MultiSSID", "sniffmultissid", Icons.Filled.Dns, Accent.SNIFFER, MenuAction.Send("sniffmultissid")),
                     MenuItem("Scan AP/STA", "scanall", Icons.Filled.PermScanWifi, Accent.SNIFFER, MenuAction.Send("scanall")),
                     MenuItem("Fox Hunt", "Pick an AP, then tap Fox Hunt", Icons.Filled.SettingsInputAntenna, Accent.SNIFFER, MenuAction.OpenList(ListType.ACCESS_POINTS)),
-                    MenuItem("Recon Mission", "recon wifi", Icons.Filled.Radar, Accent.SNIFFER, MenuAction.Send("recon wifi")),
+                    MenuItem("Recon Mission", "recon wifi", Icons.Filled.Radar, Accent.SNIFFER, MenuAction.Send("recon wifi"), requiresCaps = setOf("recon")),
                     MenuItem("MAC Monitor", "mactrack", Icons.Filled.TrackChanges, Accent.SNIFFER, MenuAction.Send("mactrack")),
                     MenuItem("SAE Commit", "sniffsae", Icons.Filled.Lock, Accent.SNIFFER, MenuAction.Send("sniffsae")),
                 ),
@@ -223,7 +237,7 @@ object Catalog {
                     MenuItem("Evil Portal", "Captive portal", Icons.Filled.Language, Accent.ATTACK, MenuAction.Submenu("evil_portal"), dangerous = true),
                     MenuItem("Deauth Flood", "attack -t deauth", Icons.Filled.WifiOff, Accent.ATTACK, MenuAction.Send("attack -t deauth"), dangerous = true),
                     MenuItem("AP Clone Spam", "attack -t beacon -a", Icons.Filled.ContentCopy, Accent.ATTACK, MenuAction.Send("attack -t beacon -a"), dangerous = true),
-                    MenuItem("Deauth Targeted", "attack -t deauth -c", Icons.Filled.GpsFixed, Accent.ATTACK, MenuAction.Send("attack -t deauth -c"), dangerous = true),
+                    MenuItem("Deauth Flood (targeted, DoS only)", "attack -t deauth -c · no capture", Icons.Filled.GpsFixed, Accent.ATTACK, MenuAction.Send("attack -t deauth -c"), dangerous = true),
                     MenuItem("Karma", "karma", Icons.Filled.Whatshot, Accent.ATTACK, MenuAction.Send("karma"), dangerous = true),
                     MenuItem("Bad Msg", "attack -t badmsg", Icons.Filled.Warning, Accent.ATTACK, MenuAction.Send("attack -t badmsg"), dangerous = true),
                     MenuItem("Bad Msg Targeted", "attack -t badmsg -c", Icons.Filled.Warning, Accent.ATTACK, MenuAction.Send("attack -t badmsg -c"), dangerous = true),
@@ -296,7 +310,7 @@ object Catalog {
                     MenuItem("Flock Sniff", "sniffbt -t flock", Icons.Filled.Videocam, Accent.BLUETOOTH, MenuAction.Send("sniffbt -t flock")),
                     MenuItem("Meta Detect", "sniffbt -t meta", Icons.Filled.Visibility, Accent.BLUETOOTH, MenuAction.Send("sniffbt -t meta")),
                     MenuItem("iBeacon Sniff", "sniffbt -t ibeacon", Icons.Filled.Sensors, Accent.BLUETOOTH, MenuAction.Send("sniffbt -t ibeacon")),
-                    MenuItem("Remote ID (Drones)", "remoteid scan", Icons.Filled.Radar, Accent.BLUETOOTH, MenuAction.Send("remoteid scan")),
+                    MenuItem("Remote ID (Drones)", "remoteid scan", Icons.Filled.Radar, Accent.BLUETOOTH, MenuAction.Send("remoteid scan"), requiresCaps = setOf("remoteid")),
                     MenuItem("Detect Card Skimmers", "sniffskim", Icons.Filled.CreditCard, Accent.BLUETOOTH, MenuAction.Send("sniffskim")),
                 ),
             ),
@@ -305,14 +319,14 @@ object Catalog {
             MenuScreen(
                 "bt_attacks", "Attacks",
                 listOf(
-                    MenuItem("Sour Apple", "blespam -t sourapple", Icons.Filled.PhoneIphone, Accent.ATTACK, MenuAction.Send("blespam -t sourapple"), dangerous = true),
-                    MenuItem("Apple Juice", "blespam -t applejuice", Icons.Filled.PhoneIphone, Accent.ATTACK, MenuAction.Send("blespam -t applejuice"), dangerous = true),
-                    MenuItem("Swiftpair Spam", "blespam -t windows", Icons.Filled.DesktopWindows, Accent.ATTACK, MenuAction.Send("blespam -t windows"), dangerous = true),
-                    MenuItem("Samsung BLE Spam", "blespam -t samsung", Icons.Filled.Smartphone, Accent.ATTACK, MenuAction.Send("blespam -t samsung"), dangerous = true),
-                    MenuItem("Google BLE Spam", "blespam -t google", Icons.Filled.Android, Accent.ATTACK, MenuAction.Send("blespam -t google"), dangerous = true),
-                    MenuItem("Flipper BLE Spam", "blespam -t flipper", Icons.Filled.SmartToy, Accent.ATTACK, MenuAction.Send("blespam -t flipper"), dangerous = true),
-                    MenuItem("BLE Spam All", "blespam -t all", Icons.Filled.Campaign, Accent.ATTACK, MenuAction.Send("blespam -t all"), dangerous = true),
-                    MenuItem("Spoof Airtag", "spoofat -t 0", Icons.Filled.Luggage, Accent.ATTACK, MenuAction.Send("spoofat -t 0"), dangerous = true),
+                    MenuItem("Sour Apple", "blespam -t sourapple", Icons.Filled.PhoneIphone, Accent.ATTACK, MenuAction.Send("blespam -t sourapple"), dangerous = true, tier = Tier.HIGH),
+                    MenuItem("Apple Juice", "blespam -t applejuice", Icons.Filled.PhoneIphone, Accent.ATTACK, MenuAction.Send("blespam -t applejuice"), dangerous = true, tier = Tier.HIGH),
+                    MenuItem("Swiftpair Spam", "blespam -t windows", Icons.Filled.DesktopWindows, Accent.ATTACK, MenuAction.Send("blespam -t windows"), dangerous = true, tier = Tier.HIGH),
+                    MenuItem("Samsung BLE Spam", "blespam -t samsung", Icons.Filled.Smartphone, Accent.ATTACK, MenuAction.Send("blespam -t samsung"), dangerous = true, tier = Tier.HIGH),
+                    MenuItem("Google BLE Spam", "blespam -t google", Icons.Filled.Android, Accent.ATTACK, MenuAction.Send("blespam -t google"), dangerous = true, tier = Tier.HIGH),
+                    MenuItem("Flipper BLE Spam", "blespam -t flipper", Icons.Filled.SmartToy, Accent.ATTACK, MenuAction.Send("blespam -t flipper"), dangerous = true, tier = Tier.HIGH),
+                    MenuItem("BLE Spam All", "blespam -t all", Icons.Filled.Campaign, Accent.ATTACK, MenuAction.Send("blespam -t all"), dangerous = true, tier = Tier.HIGH),
+                    MenuItem("Spoof Airtag", "spoofat -t 0", Icons.Filled.Luggage, Accent.ATTACK, MenuAction.Send("spoofat -t 0"), dangerous = true, tier = Tier.HIGH),
                 ),
             ),
         )
@@ -355,10 +369,10 @@ object Catalog {
                     MenuItem("Brightness Cycle", "brightness -c", Icons.Filled.BrightnessMedium, Accent.DEVICE, MenuAction.Send("brightness -c")),
                     MenuItem("LED Rainbow", "led -p rainbow", Icons.Filled.Palette, Accent.DEVICE, MenuAction.Send("led -p rainbow")),
                     MenuItem("LED Cyan", "led -s #00d5ff", Icons.Filled.Lightbulb, Accent.DEVICE, MenuAction.Send("led -s #00d5ff")),
-                    MenuItem("Save/Load Files", "SD list persistence", Icons.Filled.Folder, Accent.DEVICE, MenuAction.Submenu("device_files")),
-                    MenuItem("List SD Files", "ls /", Icons.Filled.FolderOpen, Accent.DEVICE, MenuAction.Send("ls /")),
+                    MenuItem("Save/Load Files", "SD list persistence", Icons.Filled.Folder, Accent.DEVICE, MenuAction.Submenu("device_files"), requiresCaps = setOf("sd")),
+                    MenuItem("List SD Files", "ls /", Icons.Filled.FolderOpen, Accent.DEVICE, MenuAction.Send("ls /"), requiresCaps = setOf("sd")),
                     MenuItem("Console", "Raw serial terminal", Icons.Filled.Terminal, Accent.DEVICE, MenuAction.OpenConsole),
-                    MenuItem("Update Firmware", "update -s", Icons.Filled.SystemUpdate, Accent.DEVICE, MenuAction.Send("update -s"), dangerous = true),
+                    MenuItem("Update Firmware", "update -s · from SD card", Icons.Filled.SystemUpdate, Accent.DEVICE, MenuAction.Send("update -s"), dangerous = true, requiresCaps = setOf("sd")),
                     MenuItem("Reboot", "reboot", Icons.Filled.RestartAlt, Accent.NEUTRAL, MenuAction.Send("reboot")),
                 ),
             ),

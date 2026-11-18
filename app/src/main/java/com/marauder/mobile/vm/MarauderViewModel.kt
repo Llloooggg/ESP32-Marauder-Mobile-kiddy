@@ -368,7 +368,11 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         if (usb.status.value != UsbSerialManager.Status.CONNECTED) return false
         if (_activeMission.value?.done == false) stopMission()
 
-        if (kind == MissionKind.CAPTURE && !captureCapable) {
+        var cmd = command.trim()
+        // Any pcap-writing command gets streamed to the phone (the SD-card replacement),
+        // not only the ones the UI labels as captures.
+        val capturing = kind == MissionKind.CAPTURE || LiveClassifier.of(cmd).capture
+        if (capturing && !captureCapable) {
             _snackbar.tryEmit("This firmware cannot stream captures (no capstream cap)")
             return false
         }
@@ -376,8 +380,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         usb.send("stopscan")
         preCommands.forEach { runCommand(it) }
 
-        var cmd = command.trim()
-        if (kind == MissionKind.CAPTURE) {
+        if (capturing) {
             if (!cmd.contains("-serial")) cmd += " -serial"
             val path = captureSink.begin(cmd.substringBefore(' '), CaptureFrame.TYPE_PCAP)
             _capture.value = CaptureUiState(active = true, path = path, kind = "pcap")
@@ -403,9 +406,6 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         finalizeMission(m, natural = false)
     }
 
-    /** Leave a mission screen but keep the mission running (view detaches). */
-    fun missionFinishedUI() {}
-
     private fun startMissionPolling(cmd: String) {
         val list = LiveClassifier.of(cmd).list
         liveJob?.cancel()
@@ -422,10 +422,19 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     /** The firmware ended the mission on its own (jsonstatus went idle). */
     private fun maybeFinishMission(s: DeviceMessage.Status) {
         val m = _activeMission.value ?: return
-        if (m.done || !m.stopOnIdle) return
+        if (m.done) return
+        // A capture needs headroom on the board: with little heap left the firmware
+        // ring starts shedding frames (or aborts), so stop early and keep what we got.
+        if (m.streamsCapture && s.free in 1 until LOW_HEAP_BYTES) {
+            runCommand("stopscan")
+            finalizeMission(m, natural = false)
+            _snackbar.tryEmit("Board memory low (${s.free / 1024} KB) — capture stopped")
+            return
+        }
+        if (!m.stopOnIdle) return
         if (!s.running && System.currentTimeMillis() - m.startedAt > 3000) {
             finalizeMission(m, natural = true)
-            _snackbar.tryEmit(if (m.kind == MissionKind.CAPTURE) "Capture finished" else "${m.title} stopped")
+            _snackbar.tryEmit(if (m.streamsCapture) "Capture finished" else "${m.title} stopped")
         }
     }
 
@@ -445,6 +454,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         }
         _activeMission.value = m.copy(
             done = true,
+            endedAt = System.currentTimeMillis(),
             artifactName = artifactName,
             bytes = captureSink.bytes,
             missedFrames = captureSink.missedFrames,
@@ -480,7 +490,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     /** Watch the firmware console for capture-success lines ("Received EAPOL:"). */
     private fun onConsoleLine(raw: String) {
         val m = _activeMission.value ?: return
-        if (m.done || m.kind != MissionKind.CAPTURE) return
+        if (m.done || !m.streamsCapture) return
         val match = eapolRx.find(raw) ?: return
         val mac = match.groupValues[1].lowercase()
         _activeMission.value = m.copy(eapol = m.eapol + (mac to (m.eapol[mac] ?: 0) + 1))
@@ -510,6 +520,12 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         apPollJob?.cancel()
         apPollJob = null
     }
+
+    /** The AP with this firmware list index, or null once it left the list. */
+    fun ap(index: Int): DeviceMessage.Ap? = _aps.value.firstOrNull { it.index == index }
+
+    /** Stations the firmware has associated with the AP at this index. */
+    fun stationsFor(index: Int): List<DeviceMessage.Sta> = _stations.value.filter { it.ap == index }
 
     // --- Location permission (requested from the live screen) ----------------
 
@@ -1060,6 +1076,9 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     companion object {
         private const val MAX_CONSOLE = 800
         private const val MAX_SAMPLES = 120
+
+        /** Free heap (bytes) below which a streaming capture is stopped early. */
+        private const val LOW_HEAP_BYTES = 40_000L
 
         private const val APP_RELEASE = "marauder-mobile"
     }

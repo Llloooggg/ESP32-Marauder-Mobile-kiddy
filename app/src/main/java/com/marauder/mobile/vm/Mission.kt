@@ -1,7 +1,9 @@
 package com.marauder.mobile.vm
 
+import com.marauder.mobile.data.LiveClassifier
+
 /** What a running mission is doing — drives icons, counters and stop semantics. */
-enum class MissionKind { SCAN, SNIFF, CAPTURE, ATTACK, WARDRIVE, OTHER }
+enum class MissionKind { SCAN, SNIFF, CAPTURE, ATTACK, WARDRIVE, HUNT, PORTAL, OTHER }
 
 /**
  * One live firmware activity the app started and supervises (scan, capture,
@@ -28,6 +30,12 @@ data class Mission(
     /** Artifact file registered when the capture was finalized, if any. */
     val artifactName: String? = null,
     val done: Boolean = false,
+    /** When the mission was finalized (null while it still runs). */
+    val endedAt: Long? = null,
 ) {
     val eapolTotal: Int get() = eapol.values.sum()
+
+    /** True when this mission streams a pcap from the board into the artifact library. */
+    val streamsCapture: Boolean
+        get() = kind == MissionKind.CAPTURE || com.marauder.mobile.data.LiveClassifier.of(command).capture
 }
