@@ -71,4 +71,40 @@ class CrackCoreTest {
         assertEquals("dfa66747de9ae63030ca32611497c827",
             WpaCrypto.aesCmac(key, msg40).joinToString("") { "%02x".format(it) })
     }
+
+    @Test
+    fun standardRsnHandshakeCracks() {
+        // Simulate a genuine WPA2-AES AP (IEEE 802.11 RSN): KCK comes from the
+        // PRF-384 first block — HMAC-SHA1(PMK, 0x00 || label || 0x00 || macs || nonces)
+        // — and M2's MIC = AES-CMAC(KCK, EAPOL)[0..16). hashcat's aux kernels do
+        // not try this combination; our kckStd variant must.
+        val password = "s3cret-pass!"
+        val essid = "RealWorldNet".toByteArray(Charsets.UTF_8)
+        val aa = "001122334455"
+        val spa = "66778899aabb"
+        val anonce = "aa".repeat(32)
+        val snonce = "11".repeat(32)
+        val frame = "01030075" + "02" + "010a" + "0000" + "0000000000000001" +
+            snonce + "0".repeat(96) + "0016" + "30140100000fac040100000fac040100000fac028000"
+
+        fun unhex(s: String) = ByteArray(s.length / 2) {
+            ((Character.digit(s[it * 2], 16) shl 4) or Character.digit(s[it * 2 + 1], 16)).toByte()
+        }
+        fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+
+        val pmk = WpaCrypto.pbkdf2Sha1(password, essid, 4096, 32)
+        val kdfMsg = byteArrayOf(0) +
+            "Pairwise key expansion".toByteArray(Charsets.ISO_8859_1) + byteArrayOf(0) +
+            unhex(aa) + unhex(spa) + unhex(snonce) + unhex(anonce) // min(snonce)<max(anonce), aa<spa
+        val kck = WpaCrypto.hmac("HmacSHA1", pmk, kdfMsg).copyOfRange(0, 16)
+        val mic = WpaCrypto.aesCmac(kck, unhex(frame))
+
+        val line = "WPA*02*${hex(mic)}*$aa*$spa*${hex(essid)}*$anonce*$frame*02"
+        val t = CrackCore.parse(line)
+        assertNotNull(t)
+        assertEquals(2, t!!.keyver)
+        assertTrue(t.verify(password))
+        assertTrue(!t.verify("s3cret-pass"))
+        assertTrue(!t.verify("wrong-password"))
+    }
 }

@@ -10,28 +10,45 @@ import java.util.Arrays
 /**
  * A parsed hashcat mode-22000 line, pre-processed for per-password verification:
  * everything that does not depend on the candidate password is computed once
- * (pairwise-key-expansion input, MIC message buffer, expected tag).
+ * (pairwise-key-expansion buffers, MIC message buffers, expected tag).
  *
- * Verification follows hashcat v6.2.6 `module_22000.c` / `m22000-pure.cl`
- * (verified against the hashcat wiki WPA*02 example vector and the mode's
- * built-in PMKID self-test — see CrackCoreTest):
- *  - PMK   = PBKDF2-HMAC-SHA1(password, essid, 4096, 32)
- *  - PMKID = HMAC-SHA1(key=PMK, "PMK Name" + AA + SPA)[0..16)
- *  - keyver1: KDE = HMAC-SHA1(PMK, PKE100);  MIC = HMAC-MD5(KDE[0..16), EAPOL)[0..16)
- *  - keyver2: KDE = HMAC-SHA1(PMK, PKE100);  MIC = HMAC-SHA1(KDE[0..16), EAPOL)[0..16)
- *  - keyver3: K   = HMAC-SHA256(PMK, PKE102); MIC = AES-CMAC(K[0..16), EAPOL || 0x80)
- * EAPOL is hashed exactly as stored in the line; by hcxtools convention the
- * Key MIC field inside the frame is already zeroed there.
+ * Parity with hashcat v6.2.6 (`module_22000.c` + `OpenCL/m22000-pure.cl`):
+ * every EAPOL line is checked by ALL deep-compute aux kernels — their guards
+ * are `type != 2 && keyver != N` — so the keyver field only picks the module's
+ * byte-swap convention at parse time, not one MIC algorithm. Verification here
+ * is the same variant superset (each tag truncated to 16 bytes):
+ *
+ *  - PMK    = PBKDF2-HMAC-SHA1(password, essid, 4096 iterations, 32 bytes)
+ *  - PMKID  = HMAC-SHA1(PMK, "PMK Name" || AA || SPA)                       (aux4)
+ *  - KDE100 = HMAC-SHA1(PMK, PKE100),  PKE100 = label+0 || macs || nonces || 0   (aux1/aux2)
+ *  - KDE102 = HMAC-SHA256(PMK, PKE102), PKE102 = 01 00 label macs nonces 80 01   (aux3)
+ *  - KCKstd = HMAC-SHA1(PMK, PKE100std), PKE100std = 0 || label || 0 || macs || nonces
+ *            (802.11 PRF-384 first block; the plain RSN WPA2-AES KCK, kept as an
+ *             extra beyond hashcat for real-capture coverage)
+ *  candidate MICs over each message variant: HMAC-MD5(KDE100[0..16)),
+ *  HMAC-SHA1(KDE100[0..16)), AES-CMAC(KDE102[0..16)), AES-CMAC(KCKstd[0..16)),
+ *  HMAC-MD5(KDE100md5[0..16)) with KDE100md5 = HMAC-MD5(PMK, PKE100) (legacy WPA1)
+ *  messages: the stored EAPOL as-is (hcxtools convention: its inner Key MIC
+ *  field is already zeroed), its 4-byte-word byte-swapped form (hashcat pre-
+ *  swaps the eapol for keyver 2), each also with one trailing 0x80 appended
+ *  (hashcat appends that for keyver 3 before CMAC).
+ *
+ * Known answers (see CrackCoreTest): the mode's built-in selftest PMKID
+ * (`ST_HASH`/`ST_PASS` in module_22000.c, password "hashcat!") and the hashcat
+ * wiki WPA*02 example (essid TP-LINK_HASHCAT_TEST, password "hashcat!") both
+ * crack to the exact byte-for-byte tag.
  */
 class WpaTarget internal constructor(
     val kind: HashKind,
     val essid: ByteArray,
     val keyver: Int,
     private val pmkSalt: ByteArray,
-    private val pmkidData: ByteArray?,   // type 1: "PMK Name"+AA+SPA
-    private val pke: ByteArray?,         // type 2: pairwise key expansion input
-    private val micMsg: ByteArray?,      // type 2: EAPOL w/ MIC zeroed (+0x80 pad for kv3)
-    private val expected: ByteArray,     // 16B PMKID or Key MIC
+    private val pmkidData: ByteArray?,         // type 1: "PMK Name"+AA+SPA
+    private val pke100: ByteArray?,            // type 2: hashcat aux1/aux2 expansion
+    private val pke102: ByteArray?,            // type 2: hashcat aux3 (KDF-256 style)
+    private val pkeStd: ByteArray?,            // type 2: 802.11 PRF-384 (counter first)
+    private val micMsgs: Array<ByteArray>?,    // type 2: candidate MIC messages
+    private val expected: ByteArray,           // 16B PMKID or Key MIC
 ) {
     val expectedHex: String = expected.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
     val essidText: String = String(essid, Charsets.ISO_8859_1)
@@ -46,32 +63,21 @@ class WpaTarget internal constructor(
      * every target sharing it.
      */
     fun verifyWithPmk(pmk: ByteArray): Boolean {
-        return when (kind) {
-            HashKind.PMKID -> {
-                val calc = WpaCrypto.hmac("HmacSHA1", pmk, pmkidData!!)
-                Arrays.equals(calc, 0, 16, expected, 0, 16)
-            }
-            HashKind.HANDSHAKE -> when (keyver) {
-                // Semantics taken from hashcat v6.2.6 OpenCL/m22000-pure.cl
-                // aux1/aux2/aux3 kernels (message bytes = stored eapol as-is):
-                //  kv1: KDE = HMAC-SHA1(PMK, PKE100);  MIC = HMAC-MD5(KDE[0..16), eapol)[0..16)
-                //  kv2: KDE = HMAC-SHA1(PMK, PKE100);  MIC = HMAC-SHA1(KDE[0..16), eapol)[0..16)
-                //  kv3: K   = HMAC-SHA256(PMK, PKE102); MIC = AES-CMAC(K[0..16), eapol || 0x80)
-                1 -> Arrays.equals(
-                    WpaCrypto.hmac("HmacMD5", WpaCrypto.hmac("HmacSHA1", pmk, pke!!).copyOfRange(0, 16), micMsg!!),
-                    0, 16, expected, 0, 16,
-                )
-                2 -> Arrays.equals(
-                    WpaCrypto.hmac("HmacSHA1", WpaCrypto.hmac("HmacSHA1", pmk, pke!!).copyOfRange(0, 16), micMsg!!),
-                    0, 16, expected, 0, 16,
-                )
-                3 -> Arrays.equals(
-                    WpaCrypto.aesCmac(WpaCrypto.hmac("HmacSHA256", pmk, pke!!).copyOfRange(0, 16), micMsg!!),
-                    0, 16, expected, 0, 16,
-                )
-                else -> false
-            }
+        if (kind == HashKind.PMKID) {
+            return Arrays.equals(WpaCrypto.hmac("HmacSHA1", pmk, pmkidData!!), 0, 16, expected, 0, 16)
         }
+        val kde100 = WpaCrypto.hmac("HmacSHA1", pmk, pke100!!).copyOfRange(0, 16)
+        val kde100md5 = WpaCrypto.hmac("HmacMD5", pmk, pke100).copyOfRange(0, 16) // legacy WPA1 KCK
+        val kde102 = WpaCrypto.hmac("HmacSHA256", pmk, pke102!!).copyOfRange(0, 16)
+        val kckStd = WpaCrypto.hmac("HmacSHA1", pmk, pkeStd!!).copyOfRange(0, 16) // 802.11 PRF-384 KCK
+        for (msg in micMsgs!!) {
+            if (Arrays.equals(WpaCrypto.hmac("HmacMD5", kde100, msg), 0, 16, expected, 0, 16)) return true
+            if (Arrays.equals(WpaCrypto.hmac("HmacSHA1", kde100, msg), 0, 16, expected, 0, 16)) return true
+            if (Arrays.equals(WpaCrypto.aesCmac(kde102, msg), 0, 16, expected, 0, 16)) return true
+            if (Arrays.equals(WpaCrypto.aesCmac(kckStd, msg), 0, 16, expected, 0, 16)) return true
+            if (Arrays.equals(WpaCrypto.hmac("HmacMD5", kde100md5, msg), 0, 16, expected, 0, 16)) return true
+        }
+        return false
     }
 }
 
@@ -92,7 +98,7 @@ object CrackCore {
                     val essid = unhexLenient(p[5]) ?: return null
                     if (essid.isEmpty()) return null
                     val pmkidData = "PMK Name".toByteArray(Charsets.ISO_8859_1) + aa + spa
-                    WpaTarget(HashKind.PMKID, essid, 0, essid, pmkidData, null, null, pmkid)
+                    WpaTarget(HashKind.PMKID, essid, 0, essid, pmkidData, null, null, null, null, pmkid)
                 }
                 "02" -> {
                     if (p.size < 9) return null
@@ -105,16 +111,20 @@ object CrackCore {
                     val eapol = unhexAny(p[7]) ?: return null
                     if (eapol.size < 99) return null // auth_packet minimum
                     val keyver = be16(eapol, 5) and 0x0003
-                    if (keyver !in 1..3) return null
+                    if (keyver !in 1..3) return null // module rejects keyver 0 / >3
                     val snonce = eapol.copyOfRange(17, 49)
-                    val pke = buildPke(keyver, aa, spa, anonce, snonce)
-                    // hashcat hashes the eapol EXACTLY as stored in the line (hcxtools
-                    // convention: the Key MIC field inside the frame is zeroed there).
-                    // For keyver 3 the module appends one 0x80 byte (OpenCL aux3 path).
-                    val micMsg = if (keyver == 3) {
-                        eapol.copyOf(eapol.size + 1).also { it[it.size - 1] = 0x80.toByte() }
-                    } else eapol
-                    WpaTarget(HashKind.HANDSHAKE, essid, keyver, essid, null, pke, micMsg, mic)
+                    val raw = eapol
+                    val swap = wordSwapped(raw)
+                    val padded = raw.copyOf(raw.size + 1).also { it[raw.size] = 0x80.toByte() }
+                    val paddedSwap = swap.copyOf(swap.size + 1).also { it[swap.size] = 0x80.toByte() }
+                    WpaTarget(
+                        HashKind.HANDSHAKE, essid, keyver, essid, null,
+                        pke100(aa, spa, anonce, snonce),
+                        pke102(aa, spa, anonce, snonce),
+                        pkeStd(aa, spa, anonce, snonce),
+                        arrayOf(raw, swap, padded, paddedSwap),
+                        mic,
+                    )
                 }
                 else -> null
             }
@@ -123,31 +133,61 @@ object CrackCore {
         }
     }
 
-    private fun buildPke(keyver: Int, aa: ByteArray, spa: ByteArray, anonce: ByteArray, snonce: ByteArray): ByteArray {
-        val (macLow, macHigh) = if (compare(aa, spa) <= 0) Pair(aa, spa) else Pair(spa, aa)
-        val (nonLow, nonHigh) = if (compare(anonce, snonce) <= 0) Pair(anonce, snonce) else Pair(snonce, anonce)
-        return if (keyver == 3) {
-            val pke = ByteArray(102)
-            pke[0] = 1
-            System.arraycopy("Pairwise key expansion".toByteArray(Charsets.ISO_8859_1), 0, pke, 2, 22)
-            System.arraycopy(macLow, 0, pke, 24, 6)
-            System.arraycopy(macHigh, 0, pke, 30, 6)
-            System.arraycopy(nonLow, 0, pke, 36, 32)
-            System.arraycopy(nonHigh, 0, pke, 68, 32)
-            pke[100] = 0x80.toByte()
-            pke[101] = 1
-            pke
-        } else {
-            // 802.11i PKE: label\0 + macs + nonces = 99 bytes; hashcat HMACs 100
-            // (the pke buffer's one trailing zero byte is part of the message)
-            val pke = ByteArray(100)
-            System.arraycopy("Pairwise key expansion\u0000".toByteArray(Charsets.ISO_8859_1), 0, pke, 0, 23)
-            System.arraycopy(macLow, 0, pke, 23, 6)
-            System.arraycopy(macHigh, 0, pke, 29, 6)
-            System.arraycopy(nonLow, 0, pke, 35, 32)
-            System.arraycopy(nonHigh, 0, pke, 67, 32)
-            pke
+    /** hashcat aux1/aux2 buffer: label+NUL(23) macs(12) nonces(64) + trailing 0 → 100. */
+    private fun pke100(aa: ByteArray, spa: ByteArray, anonce: ByteArray, snonce: ByteArray): ByteArray {
+        val (macLow, macHigh) = ordered(aa, spa)
+        val (nonLow, nonHigh) = ordered(anonce, snonce)
+        val b = ByteArray(100)
+        System.arraycopy("Pairwise key expansion\u0000".toByteArray(Charsets.ISO_8859_1), 0, b, 0, 23)
+        System.arraycopy(macLow, 0, b, 23, 6)
+        System.arraycopy(macHigh, 0, b, 29, 6)
+        System.arraycopy(nonLow, 0, b, 35, 32)
+        System.arraycopy(nonHigh, 0, b, 67, 32)
+        return b
+    }
+
+    /** hashcat aux3 buffer: 01 00 label(22) macs(12) nonces(64) 80 01 → 102. */
+    private fun pke102(aa: ByteArray, spa: ByteArray, anonce: ByteArray, snonce: ByteArray): ByteArray {
+        val (macLow, macHigh) = ordered(aa, spa)
+        val (nonLow, nonHigh) = ordered(anonce, snonce)
+        val b = ByteArray(102)
+        b[0] = 1
+        System.arraycopy("Pairwise key expansion".toByteArray(Charsets.ISO_8859_1), 0, b, 2, 22)
+        System.arraycopy(macLow, 0, b, 24, 6)
+        System.arraycopy(macHigh, 0, b, 30, 6)
+        System.arraycopy(nonLow, 0, b, 36, 32)
+        System.arraycopy(nonHigh, 0, b, 68, 32)
+        b[100] = 0x80.toByte()
+        b[101] = 1
+        return b
+    }
+
+    /** 802.11 PRF-384 block-0 message: counter(00) label(22) 00 macs(12) nonces(64) → 100. */
+    private fun pkeStd(aa: ByteArray, spa: ByteArray, anonce: ByteArray, snonce: ByteArray): ByteArray {
+        val (macLow, macHigh) = ordered(aa, spa)
+        val (nonLow, nonHigh) = ordered(anonce, snonce)
+        val b = ByteArray(100)
+        System.arraycopy("Pairwise key expansion".toByteArray(Charsets.ISO_8859_1), 0, b, 1, 22)
+        System.arraycopy(macLow, 0, b, 24, 6)
+        System.arraycopy(macHigh, 0, b, 30, 6)
+        System.arraycopy(nonLow, 0, b, 36, 32)
+        System.arraycopy(nonHigh, 0, b, 68, 32)
+        return b
+    }
+
+    private fun ordered(a: ByteArray, b: ByteArray): Pair<ByteArray, ByteArray> =
+        if (compare(a, b) <= 0) Pair(a, b) else Pair(b, a)
+
+    /** Reverse each aligned 4-byte group — hashcat's keyver-2 eapol pre-swap. */
+    private fun wordSwapped(src: ByteArray): ByteArray {
+        val out = src.copyOf()
+        var i = 0
+        while (i + 4 <= out.size) {
+            val a = out[i]; out[i] = out[i + 3]; out[i + 3] = a
+            val b = out[i + 1]; out[i + 1] = out[i + 2]; out[i + 2] = b
+            i += 4
         }
+        return out
     }
 
     private fun compare(a: ByteArray, b: ByteArray): Int {

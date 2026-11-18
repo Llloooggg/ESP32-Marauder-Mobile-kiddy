@@ -89,6 +89,11 @@ is plugged in.
 - 🖥️ Raw serial console.
 - 🎨 **Light & dark themes** — toggle from the main screen; the choice persists.
 - 🔌 Auto-detect & auto-connect on USB attach.
+- 📦 **Artifact library** — captures, wardrive logs and GPX on the phone; one tap
+  turns a pcap into hashcat-22000 lines (PMKID + M1/M2 extraction, pure Kotlin).
+- 🔑 **Built-in WPA2 cracker** — CPU wordlist attack (PBKDF2-HMAC-SHA1-4096,
+  hashcat-22000 semantics, KAT-tested). Ships with a built-in wordlist; add your
+  own by URL or file picker. No root, no Termux.
 
 ## Protocol (firmware ↔ app)
 
@@ -124,13 +129,19 @@ sdk.dir=/path/to/Android/sdk
 ./gradlew :app:assembleDebug :app:testDebugUnitTest
 ```
 
+Debug APKs land in `app/build/outputs/apk/debug/`, one per ABI
+(`arm64-v8a`, `armeabi-v7a`, `x86_64`) plus a universal build. On a modern
+phone install the `arm64-v8a` one — e.g. `app-arm64-v8a-debug.apk`.
+
 **Release build:**
 
 ```bash
 ./gradlew :app:assembleRelease
 ```
 
-The signed APK lands at `app/build/outputs/apk/release/app-release.apk`.
+Signed release APKs land at `app/build/outputs/apk/release/` (same per-ABI
+split). Without a `keystore.properties` the release APKs stay unsigned and
+will not install — use the debug builds.
 
 ### Release signing
 
