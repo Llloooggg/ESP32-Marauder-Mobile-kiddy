@@ -4,9 +4,13 @@ package com.marauder.extractor
 enum class HashKind { PMKID, HANDSHAKE }
 
 /**
- * One extracted hashcat-mode-22000 credential. [line] is the full hashcat
- * input line ("$22000$<hex>$..."), everything else is display metadata for
- * the UI (parsed back out of the record, not guessed).
+ * One extracted hashcat-mode-22000 credential. [line] is the hashcat input
+ * line in the format module_22000.c natively parses (verified against the
+ * hashcat v6.2.6 source):
+ *  - PMKID:     `WPA*01*<pmkid:16B hex>*<ap mac>*<sta mac>*<essid hex>***`
+ *  - handshake: `WPA*02*<mic:16B hex>*<ap mac>*<sta mac>*<essid hex>*<ap nonce:32B hex>*<M2 eapol frame hex>*<message pair:1B hex>`
+ * Everything else is display metadata for the UI (parsed back out of the
+ * record, not guessed).
  */
 data class ExtractedHash(
     val kind: HashKind,
