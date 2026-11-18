@@ -137,8 +137,11 @@ object Extractor {
                 continue
             }
             val mp = 2 // M1+M2, AP side (the pairing we actually did)
+            // hashcat/hcxtools convention: the Key MIC field (bytes 81..96) inside
+            // the eapol hex is zeroed; the real MIC lives in token[2].
+            val m2Line = hit.m2.copyOf().also { java.util.Arrays.fill(it, 81, 97, 0) }
             val hashLine = "WPA*02*${hex(hit.mic)}*${hit.aa.replace(":", "")}*${hit.spa.replace(":", "")}*" +
-                "${hex(ssid)}*${hex(hit.anonce)}*${hex(hit.m2)}*%02x".format(mp)
+                "${hex(ssid)}*${hex(hit.anonce)}*${hex(m2Line)}*%02x".format(mp)
             val keyver = keyVerFromEapol(hit.m2)
             out += ExtractedHash(
                 kind = HashKind.HANDSHAKE,

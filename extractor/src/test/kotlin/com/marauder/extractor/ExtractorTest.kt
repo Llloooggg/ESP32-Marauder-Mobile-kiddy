@@ -231,7 +231,9 @@ class ExtractorTest {
         assertEquals(staMacHex, parts[4])
         assertEquals(ssidHex, parts[5])
         assertEquals(hexOf(anonce), parts[6])
-        assertEquals(hexOf(m2), parts[7])
+        // hcxtools convention: Key MIC field zeroed inside the stored eapol
+        val m2Zeroed = m2.copyOf().also { java.util.Arrays.fill(it, 81, 97, 0) }
+        assertEquals(hexOf(m2Zeroed), parts[7])
         assertEquals("02", parts[8])
         // hashcat requires a full 64-hex anonce and an eapol of at least 99 bytes
         assertEquals(64, parts[6].length)
@@ -293,14 +295,13 @@ class ExtractorTest {
     private fun hexOf(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
 
     // ---- JVM-crypto helpers used to cross-check extracted bytes -----------------------
-    // KCK derivation exactly as hashcat 22000: PMK = PBKDF2-HMAC-SHA1(pass, essid, 4096),
-    // kde = HMAC-MD5(PMK, "Pairwise key expansion\0" || min(aa,spa) || max(aa,spa)
-    //        || min(nonce) || max(nonce)), KCK = kde[0..16).
+    // hashcat 22000 keyver-2 semantics (OpenCL aux2): PMK = PBKDF2-HMAC-SHA1(pass, essid, 4096),
+    // KDE = HMAC-SHA1(PMK, label||macs||nonces||0), MIC = HMAC-SHA1(KDE[0..16), EAPOL w/ zero MIC)[0..16).
 
-    private fun pairwiseKeyExpansion(pmk: ByteArray, anonce: ByteArray, snonce: ByteArray): ByteArray {
+    private fun pairwiseKeyExpansion(anonce: ByteArray, snonce: ByteArray): ByteArray {
         val (macLow, macHigh) = if (lexLessOrEqual(apMac, staMac)) Pair(apMac, staMac) else Pair(staMac, apMac)
         val (nonLow, nonHigh) = if (lexLessOrEqual(anonce, snonce)) Pair(anonce, snonce) else Pair(snonce, anonce)
-        val pke = ByteArray(99)
+        val pke = ByteArray(100) // byte 99 stays 0 (hashcat pads the 99-byte PKE to 100)
         System.arraycopy("Pairwise key expansion\u0000".toByteArray(Charsets.ISO_8859_1), 0, pke, 0, 23)
         System.arraycopy(macLow, 0, pke, 23, 6)
         System.arraycopy(macHigh, 0, pke, 29, 6)
@@ -313,11 +314,6 @@ class ExtractorTest {
         SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1")
             .generateSecret(PBEKeySpec(pass.toCharArray(), ssid, 4096, 256)).encoded
 
-    private fun kck(pmk: ByteArray, anonce: ByteArray, snonce: ByteArray): ByteArray {
-        val mac = Mac.getInstance("HmacMD5").apply { init(SecretKeySpec(pmk, "HmacMD5")) }
-        return mac.doFinal(pairwiseKeyExpansion(pmk, anonce, snonce)).copyOfRange(0, 16)
-    }
-
     private fun lexLessOrEqual(a: ByteArray, b: ByteArray): Boolean {
         for (i in 0 until minOf(a.size, b.size)) {
             val d = (a[i].toInt() and 0xFF) - (b[i].toInt() and 0xFF)
@@ -327,44 +323,9 @@ class ExtractorTest {
     }
 
     private fun keyver2Mic(m2: ByteArray, password: String, anonce: ByteArray, snonce: ByteArray): ByteArray {
-        val k = kck(pmkOf(password), anonce, snonce)
-        val msg = m2.copyOf().also { java.util.Arrays.fill(it, 81, 97, 0) }
-        return aesCmac(k, msg)
-    }
-
-    private fun aesCmac(key: ByteArray, msg: ByteArray): ByteArray {
-        val cipher = Cipher.getInstance("AES/ECB/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"))
-        val l = cipher.doFinal(ByteArray(16))
-
-        fun shl1(b: ByteArray): ByteArray {
-            val out = ByteArray(16)
-            for (i in 0 until 15) out[i] = ((b[i].toInt() shl 1) or ((b[i + 1].toInt() and 0x80) shr 7)).toByte()
-            out[15] = ((b[15].toInt() shl 1)).toByte()
-            return out
-        }
-
-        val k1 = shl1(l).also { if (l[0].toInt() and 0x80 != 0) it[15] = (it[15].toInt() xor 0x87).toByte() }
-        val k2 = shl1(k1).also { if (k1[0].toInt() and 0x80 != 0) it[15] = (it[15].toInt() xor 0x87).toByte() }
-
-        fun xorIn(x: ByteArray, y: ByteArray) = ByteArray(16) { (x[it].toInt() xor y[it].toInt()).toByte() }
-
-        val n = if (msg.isEmpty()) 1 else (msg.size + 15) / 16
-        val lastComplete = msg.isNotEmpty() && msg.size % 16 == 0
-        var x = ByteArray(16)
-        for (i in 0 until n) {
-            val start = i * 16
-            val avail = maxOf(0, minOf(16, msg.size - start))
-            val block = ByteArray(16).also { System.arraycopy(msg, start, it, 0, avail) }
-            val y = if (i == n - 1) {
-                if (lastComplete) xorIn(block, k1)
-                else {
-                    val padded = block.also { if (avail < 16) it[avail] = 0x80.toByte() else it[15] = (it[15].toInt() or 0x80).toByte() }
-                    xorIn(padded, k2)
-                }
-            } else block
-            x = cipher.doFinal(xorIn(x, y))
-        }
-        return x
+        val kde = Mac.getInstance("HmacSHA1").apply { init(SecretKeySpec(pmkOf(password), "HmacSHA1")) }
+            .doFinal(pairwiseKeyExpansion(anonce, snonce)).copyOfRange(0, 16)
+        return Mac.getInstance("HmacSHA1").apply { init(SecretKeySpec(kde, "HmacSHA1")) }.doFinal(m2)
+            .copyOfRange(0, 16)
     }
 }
