@@ -88,6 +88,7 @@ dependencies {
 
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.usbSerial)
+    implementation(project(":extractor"))
 
     debugImplementation(libs.androidx.ui.tooling)
 

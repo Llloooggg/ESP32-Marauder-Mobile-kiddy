@@ -3,8 +3,10 @@ package com.marauder.mobile
 import android.app.Application
 import com.marauder.mobile.capture.CaptureSink
 import com.marauder.mobile.crack.CrackEngine
+import com.marauder.mobile.crack.JvmCrackEngine
 import com.marauder.mobile.crack.NoopCrackEngine
 import com.marauder.mobile.data.ArtifactsRepository
+import com.marauder.mobile.data.PcapExtractionBridge
 import com.marauder.mobile.data.SettingsRepository
 import com.marauder.mobile.data.WordlistsRepository
 import com.marauder.mobile.location.LocationRepository
@@ -49,5 +51,7 @@ class MarauderApp : Application() {
         location = LocationRepository(this)
         artifacts = ArtifactsRepository(this)
         wordlists = WordlistsRepository(this)
+        artifacts.bridge = PcapExtractionBridge()
+        crackEngine = JvmCrackEngine()
     }
 }

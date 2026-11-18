@@ -37,8 +37,15 @@ class WpaTarget internal constructor(
     val essidText: String = String(essid, Charsets.ISO_8859_1)
 
     /** One password candidate against this target. */
-    fun verify(password: String): Boolean {
-        val pmk = WpaCrypto.pbkdf2Sha1(password, pmkSalt, 4096, 32)
+    fun verify(password: String): Boolean =
+        verifyWithPmk(WpaCrypto.pbkdf2Sha1(password, pmkSalt, 4096, 32))
+
+    /**
+     * Same check with an already-derived PMK. The PBKDF2 cost dominates cracking,
+     * so engines group targets by essid (the PMK salt) and reuse this PMK across
+     * every target sharing it.
+     */
+    fun verifyWithPmk(pmk: ByteArray): Boolean {
         return when (kind) {
             HashKind.PMKID -> {
                 val calc = WpaCrypto.hmac("HmacSHA1", pmk, pmkidData!!)
