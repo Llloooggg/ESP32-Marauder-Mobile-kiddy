@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PermScanWifi
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Terminal
@@ -91,6 +92,8 @@ import kotlinx.coroutines.delay
 fun HomeScreen(
     vm: MarauderViewModel,
     onOpenScan: () -> Unit,
+    onOpenArtifacts: () -> Unit,
+    onOpenWordlists: () -> Unit,
     onOpenMission: (Long) -> Unit,
     onOpenMenu: (String) -> Unit,
     onOpenConsole: () -> Unit,
@@ -182,6 +185,13 @@ fun HomeScreen(
                         tint = MarauderCyan,
                         onClick = onOpenScan,
                     )
+                    BigAction(
+                        label = "Capture library",
+                        hint = "pcap · GPX · logs the app has already saved on this phone",
+                        icon = Icons.Filled.Folder,
+                        tint = CatSniffer,
+                        onClick = onOpenArtifacts,
+                    )
                 }
             }
 
@@ -219,7 +229,7 @@ fun HomeScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     QuickTile("Console", Icons.Filled.Terminal, MarauderCyan, Modifier.weight(1f), onClick = onOpenConsole)
                     QuickTile("Flash firmware", Icons.Filled.SystemUpdate, CatDevice, Modifier.weight(1f), onClick = onOpenFlash)
-                    QuickTile("Capture", Icons.Filled.Bolt, CatSniffer, Modifier.weight(1f), onClick = onOpenScan)
+                    QuickTile("Wordlists", Icons.Filled.Storage, CatSniffer, Modifier.weight(1f), onClick = onOpenWordlists)
                 }
             }
         }

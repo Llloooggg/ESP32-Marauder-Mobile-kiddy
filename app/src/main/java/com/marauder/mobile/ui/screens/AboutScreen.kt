@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.DeveloperBoard
+import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -47,7 +48,7 @@ private const val FIRMWARE_URL = "https://github.com/justcallmekoko/ESP32Maraude
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AboutScreen(onBack: () -> Unit) {
+fun AboutScreen(onBack: () -> Unit, onShowTerms: () -> Unit = {}) {
     val uriHandler = LocalUriHandler.current
 
     Scaffold(
@@ -153,6 +154,12 @@ fun AboutScreen(onBack: () -> Unit) {
                 title = "ESP32 Marauder firmware",
                 subtitle = "github.com/justcallmekoko/ESP32Marauder",
                 onClick = { uriHandler.openUri(FIRMWARE_URL) },
+            )
+            LinkRow(
+                icon = Icons.Filled.Gavel,
+                title = "Authorised-use notice",
+                subtitle = "Read again what you accepted before transmitting",
+                onClick = onShowTerms,
             )
 
             Text(

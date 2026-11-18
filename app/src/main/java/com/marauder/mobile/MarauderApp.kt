@@ -2,8 +2,11 @@ package com.marauder.mobile
 
 import android.app.Application
 import com.marauder.mobile.capture.CaptureSink
+import com.marauder.mobile.crack.CrackEngine
+import com.marauder.mobile.crack.NoopCrackEngine
 import com.marauder.mobile.data.ArtifactsRepository
 import com.marauder.mobile.data.SettingsRepository
+import com.marauder.mobile.data.WordlistsRepository
 import com.marauder.mobile.location.LocationRepository
 import com.marauder.mobile.usb.UsbSerialManager
 
@@ -28,6 +31,16 @@ class MarauderApp : Application() {
     lateinit var artifacts: ArtifactsRepository
         private set
 
+    /** Cracking wordlists (built-in list + SAF imports + URL downloads). */
+    lateinit var wordlists: WordlistsRepository
+        private set
+
+    /**
+     * The cracker backend the UI drives. The build swaps this for the native (NDK)
+     * engine once it is compiled in; until then the placeholder reports honestly.
+     */
+    var crackEngine: CrackEngine = NoopCrackEngine
+
     override fun onCreate() {
         super.onCreate()
         usb = UsbSerialManager(this)
@@ -35,5 +48,6 @@ class MarauderApp : Application() {
         captureSink = CaptureSink(this)
         location = LocationRepository(this)
         artifacts = ArtifactsRepository(this)
+        wordlists = WordlistsRepository(this)
     }
 }

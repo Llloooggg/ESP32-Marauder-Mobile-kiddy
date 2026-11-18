@@ -89,21 +89,27 @@ class ArtifactStore(private val dir: File) {
         load().firstOrNull { it.name == name }?.let { Artifact(it, File(dir, it.name)) }
             ?.takeIf { it.file.exists() }
 
-    /** Remove the record and its file from disk. */
+    /** Remove the record and its file from disk (plus any extracted-hash sidecar). */
     @Synchronized
     fun delete(name: String) {
         val all = load().toMutableList()
         all.removeAll { it.name == name }
         save(all)
         runCatching { File(dir, name).delete() }
+        runCatching { hashFileFor(name).delete() }
     }
 
+    /** Sidecar file holding the hashcat-22000 lines extracted from this capture. */
+    fun hashFileFor(name: String): File = File(dir, "$name.22000.txt")
+
+    /** Store the outcome of hash extraction: state, counts and an optional note. */
     @Synchronized
-    fun updateHashState(name: String, state: String, note: String = "") {
+    fun setHashResult(name: String, state: String, note: String = "", counts: Map<String, String> = emptyMap()) {
         val all = load().toMutableList()
         val i = all.indexOfFirst { it.name == name }
         if (i >= 0) {
-            all[i] = all[i].copy(hashState = state, note = note)
+            val rec = all[i]
+            all[i] = rec.copy(hashState = state, note = note, meta = rec.meta + counts)
             save(all)
         }
     }
@@ -125,7 +131,60 @@ class ArtifactStore(private val dir: File) {
     }
 }
 
-/** Process-wide artifact library (captures directory + JSON index). */
+/**
+ * Process-wide artifact library: the capture directory plus its JSON index, and the
+ * hash-extraction seam the artifact detail screen drives.
+ */
 class ArtifactsRepository(context: Context) {
+
     val store: ArtifactStore = ArtifactStore(File(context.getExternalFilesDir(null), "captures"))
+
+    /** Replaced by the build once the `:extractor` module is linked into the app. */
+    var bridge: ExtractionBridge = UnwiredExtractionBridge
+
+    /**
+     * Turn one capture into crack-ready hashes and remember the result on the
+     * artifact (state + counts + a sidecar `.22000.txt`). Returns null when the
+     * extractor is not wired or the capture holds nothing usable.
+     */
+    fun analyze(name: String): HashExtractResult? {
+        val artifact = store.get(name) ?: return null
+        val result = bridge.extract(artifact.file)
+        if (result == null) {
+            store.setHashResult(name, ArtifactRecord.HASH_FAIL, "extractor unavailable")
+            return null
+        }
+        if (!result.usable) {
+            store.setHashResult(
+                name,
+                ArtifactRecord.HASH_FAIL,
+                result.note ?: "no PMKID or handshake in this capture",
+                mapOf("pmkid" to "0", "handshakes" to "0"),
+            )
+            return result
+        }
+        runCatching { store.hashFileFor(name).writeText(result.hashLines.joinToString("\n")) }
+        store.setHashResult(
+            name,
+            ArtifactRecord.HASH_DONE,
+            result.note ?: "",
+            mapOf(
+                "pmkid" to result.pmkidCount.toString(),
+                "handshakes" to result.handshakeSets.toString(),
+                "hashLines" to result.hashLines.size.toString(),
+            ),
+        )
+        return result
+    }
+
+    /** Crack-ready hash lines previously extracted for this artifact. */
+    fun hashLines(name: String): List<String> =
+        runCatching { store.hashFileFor(name).readLines().filter { it.isNotBlank() } }.getOrDefault(emptyList())
+
+    /** Remember a recovered password on the artifact so the result survives restarts. */
+    fun markCracked(name: String, password: String) {
+        store.get(name)?.let {
+            store.setHashResult(name, it.record.hashState, it.record.note, mapOf("cracked" to password))
+        }
+    }
 }

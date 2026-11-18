@@ -26,7 +26,15 @@ class SettingsRepository(context: Context) {
         store.edit { it[DARK_THEME] = dark }
     }
 
+    /** Whether the user has accepted the authorised-use notice (asked once per install). */
+    val termsAccepted: Flow<Boolean> = store.data.map { it[TERMS_ACCEPTED] ?: false }
+
+    suspend fun setTermsAccepted(accepted: Boolean) {
+        store.edit { it[TERMS_ACCEPTED] = accepted }
+    }
+
     private companion object {
         val DARK_THEME = booleanPreferencesKey("dark_theme")
+        val TERMS_ACCEPTED = booleanPreferencesKey("terms_accepted")
     }
 }

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Files the app is willing to hand to other apps (share / open-with).
+  Captures live in the app's own external files directory, which other apps
+  cannot read directly, so they go out through the FileProvider below.
+-->
+<paths>
+    <external-files-path
+        name="captures"
+        path="captures" />
+    <files-path
+        name="artifacts"
+        path="artifacts" />
+    <files-path
+        name="wordlists"
+        path="wordlists" />
+</paths>

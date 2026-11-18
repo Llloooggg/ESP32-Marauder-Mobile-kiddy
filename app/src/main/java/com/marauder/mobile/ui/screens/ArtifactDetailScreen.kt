@@ -1,0 +1,331 @@
+package com.marauder.mobile.ui.screens
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DriveFileMove
+import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.marauder.mobile.data.Artifact
+import com.marauder.mobile.data.ArtifactRecord
+import com.marauder.mobile.ui.copyToDocument
+import com.marauder.mobile.ui.components.SectionLabel
+import com.marauder.mobile.ui.components.StatChip
+import com.marauder.mobile.ui.shareFile
+import com.marauder.mobile.ui.theme.Danger
+import com.marauder.mobile.ui.theme.MarauderCyan
+import com.marauder.mobile.ui.theme.MarauderTextDim
+import com.marauder.mobile.ui.theme.Success
+import com.marauder.mobile.ui.theme.Warning
+import com.marauder.mobile.vm.MarauderViewModel
+import java.util.Locale
+
+/**
+ * One artifact: what it is, where it came from, and what can be done with it —
+ * extract crack-ready hashes, crack it, share it, copy it out, or delete it.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ArtifactDetailScreen(
+    artifactName: String,
+    vm: MarauderViewModel,
+    onBack: () -> Unit,
+    onOpenCrack: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    var artifact by remember(artifactName) { mutableStateOf(vm.artifact(artifactName)) }
+    var showDelete by remember { mutableStateOf(false) }
+    var renameFrom by remember { mutableStateOf<String?>(null) }
+    var analysing by remember { mutableStateOf(false) }
+
+    fun reload() { artifact = vm.artifact(artifactName) }
+
+    val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        val file = artifact?.file
+        if (uri != null && file != null) {
+            val ok = copyToDocument(context, file, uri)
+            vm.queueMessage(if (ok) "Exported a copy of ${file.name}" else "Could not write the copy")
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(artifact?.record?.title?.ifBlank { artifactName } ?: artifactName) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                },
+                actions = {
+                    IconButton(onClick = { renameFrom = artifactName }) {
+                        Icon(Icons.Filled.Edit, contentDescription = "Rename", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    IconButton(onClick = { showDelete = true }) {
+                        Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = Danger)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                ),
+            )
+        },
+    ) { inner ->
+        val record = artifact?.record
+        if (record == null) {
+            Column(
+                Modifier.fillMaxSize().padding(inner).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text("This artifact is gone.", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.height(8.dp))
+                Text("Its file was removed from the captures folder.", style = MaterialTheme.typography.bodySmall, color = MarauderTextDim)
+            }
+            return@Scaffold
+        }
+
+        val file = artifact!!.file
+        val cracked = record.meta["cracked"]
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(inner)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatChip("KIND", record.kind.uppercase(Locale.US), MarauderCyan)
+                StatChip("SIZE", formatSize(file.length()), MaterialTheme.colorScheme.onSurfaceVariant)
+                StatChip("CREATED", formatDate(record.createdAt), MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                when (record.hashState) {
+                    ArtifactRecord.HASH_DONE -> StatChip(
+                        "HASHES",
+                        "pmkid ${record.meta["pmkid"] ?: 0} · M2 ${record.meta["handshakes"] ?: 0}",
+                        Success,
+                    )
+                    ArtifactRecord.HASH_FAIL -> StatChip("NO USABLE HASHES", record.note, Danger)
+                    else -> StatChip("HASHES", "not analysed", Warning)
+                }
+                if (!cracked.isNullOrBlank()) StatChip("CRACKED", cracked, Success)
+            }
+
+            SectionLabel("What this file holds")
+            Text(
+                when (record.kind.lowercase(Locale.US)) {
+                    "pcap" -> "802.11 frames the board captured (association, handshake, data). Extracting hashes turns it into something a cracker can work on."
+                    "gpx" -> "A GPS track of a walk or drive, with the points the board logged."
+                    "csv" -> "Wardrive rows: network, BSSID, channel, signal and position — importable into Wigle-format tools."
+                    else -> "A text log written while the board was working."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MarauderTextDim,
+            )
+
+            if (record.meta.isNotEmpty()) {
+                SectionLabel("Provenance")
+                Surface(
+                    shape = RoundedCornerShape(11.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        record.meta.toSortedMap().forEach { (key, value) ->
+                            if (key == "path") return@forEach
+                            Row {
+                                Text(
+                                    key,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MarauderTextDim,
+                                    modifier = Modifier.padding(end = 8.dp),
+                                )
+                                Text(
+                                    value,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            SectionLabel("Actions")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Big(
+                    label = if (analysing) "Analysing…" else "Extract hashes",
+                    icon = Icons.Filled.Analytics,
+                    tint = MarauderCyan,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    analysing = true
+                    val result = vm.analyzeArtifact(artifactName)
+                    analysing = false
+                    reload()
+                    when {
+                        result == null -> vm.queueMessage("The hash extractor is not wired into this build yet")
+                        !result.usable -> vm.queueMessage(result.note ?: "No PMKID or WPA handshake in this capture")
+                        else -> vm.queueMessage("${result.hashLines.size} hash line(s) ready — PMKID ${result.pmkidCount}, handshakes ${result.handshakeSets}")
+                    }
+                }
+                val canCrack = record.hashState == ArtifactRecord.HASH_DONE
+                Big(
+                    label = "Crack",
+                    icon = Icons.Filled.VpnKey,
+                    tint = if (canCrack) Success else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                    enabled = canCrack,
+                ) { onOpenCrack(artifactName) }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Big(
+                    label = "Share",
+                    icon = Icons.Filled.Share,
+                    tint = Success,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    if (!shareFile(context, file)) vm.queueMessage("This file cannot be shared")
+                }
+                Big(
+                    label = "Export copy",
+                    icon = Icons.Filled.DriveFileMove,
+                    tint = Success,
+                    modifier = Modifier.weight(1f),
+                ) { export.launch(file.name) }
+                Big(
+                    label = "Delete",
+                    icon = Icons.Filled.Delete,
+                    tint = Danger,
+                    modifier = Modifier.weight(1f),
+                ) { showDelete = true }
+            }
+
+            Text(
+                "Captures live in the app's own folder (${file.parent ?: "captures"}). Use Export copy to put one somewhere you can open it with other apps.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MarauderTextDim,
+            )
+        }
+
+        if (showDelete) {
+            AlertDialog(
+                onDismissRequest = { showDelete = false },
+                title = { Text("Delete this artifact?") },
+                text = { Text("The file and its library entry are removed from the phone. This cannot be undone.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        vm.deleteArtifact(artifactName)
+                        showDelete = false
+                        onBack()
+                    }) { Text("DELETE", color = Danger) }
+                },
+                dismissButton = { TextButton(onClick = { showDelete = false }) { Text("KEEP") } },
+            )
+        }
+
+        renameFrom?.let {
+            var text by remember { mutableStateOf(record.title.ifBlank { record.name }) }
+            AlertDialog(
+                onDismissRequest = { renameFrom = null },
+                title = { Text("Rename artifact") },
+                text = {
+                    Column {
+                        Text(
+                            "The file keeps its name (${record.name}); only the library label changes.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MarauderTextDim,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(value = text, onValueChange = { text = it }, singleLine = true, label = { Text("Title") })
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        vm.renameArtifact(artifactName, text.trim())
+                        renameFrom = null
+                        reload()
+                    }) { Text("SAVE", color = MarauderCyan) }
+                },
+                dismissButton = { TextButton(onClick = { renameFrom = null }) { Text("CANCEL") } },
+            )
+        }
+    }
+}
+
+@Composable
+private fun Big(
+    label: String,
+    icon: ImageVector,
+    tint: Color,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val alpha = if (enabled) 0.13f else 0.05f
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(12.dp),
+        color = tint.copy(alpha = alpha),
+        border = BorderStroke(1.dp, tint.copy(alpha = if (enabled) 0.45f else 0.15f)),
+        modifier = modifier,
+    ) {
+        Column(Modifier.padding(vertical = 13.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(icon, contentDescription = null, tint = if (enabled) tint else MarauderTextDim, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.height(5.dp))
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (enabled) tint else MarauderTextDim,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}

@@ -9,12 +9,16 @@ import com.marauder.mobile.data.AnalyzerKind
 import com.marauder.mobile.data.ArtifactRecord
 import com.marauder.mobile.data.ArtifactsRepository
 import com.marauder.mobile.data.GpxAssembler
+import com.marauder.mobile.data.HashExtractResult
 import com.marauder.mobile.data.ListType
 import com.marauder.mobile.data.LiveClassifier
 import com.marauder.mobile.data.NmeaAssembler
 import com.marauder.mobile.data.WardriveAssembler
+import com.marauder.mobile.data.Wordlist
+import com.marauder.mobile.data.WordlistsRepository
 import com.marauder.mobile.location.LocationRepository
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.withContext
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -108,6 +112,28 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { settings.setDarkTheme(!darkTheme.value) }
     }
 
+    // --- Authorised-use notice (asked once, re-shown from About) --------------
+    private val _termsAccepted = MutableStateFlow(false)
+    val termsAccepted: StateFlow<Boolean> = _termsAccepted.asStateFlow()
+
+    private val _termsVisible = MutableStateFlow(false)
+    val termsVisible: StateFlow<Boolean> = _termsVisible.asStateFlow()
+
+    init {
+        viewModelScope.launch { settings.termsAccepted.collect { _termsAccepted.value = it } }
+    }
+
+    /** First board contact asks for acceptance; About can bring the notice back. */
+    fun showTerms() {
+        _termsVisible.value = true
+    }
+
+    fun acceptTerms() {
+        _termsVisible.value = false
+        _termsAccepted.value = true
+        viewModelScope.launch { settings.setTermsAccepted(true) }
+    }
+
     // --- Device state --------------------------------------------------------
     private val _info = MutableStateFlow<DeviceMessage.Info?>(null)
     val info: StateFlow<DeviceMessage.Info?> = _info.asStateFlow()
@@ -195,6 +221,11 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     private val _snackbar = MutableSharedFlow<String>(extraBufferCapacity = 16)
     val snackbar: SharedFlow<String> = _snackbar.asSharedFlow()
 
+    /** Show a transient message in the UI (used by screens that act outside the VM). */
+    fun queueMessage(text: String) {
+        _snackbar.tryEmit(text)
+    }
+
     private val apBuf = ArrayList<DeviceMessage.Ap>()
     private val staBuf = ArrayList<DeviceMessage.Sta>()
     private val ssidBuf = ArrayList<DeviceMessage.SsidRow>()
@@ -210,6 +241,8 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     private var flashJob: Job? = null
 
     init {
+        // Copy the built-in wordlist out of the APK once, before the cracker is ever opened.
+        viewModelScope.launch(Dispatchers.IO) { app.wordlists.seedBuiltInIfNeeded() }
         viewModelScope.launch { usb.lines.collect(::onLine) }
         viewModelScope.launch {
             // Binary capture frames carved out of the serial stream: append each to
@@ -503,6 +536,43 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     fun artifact(name: String): com.marauder.mobile.data.Artifact? = artifacts.store.get(name)
 
     fun deleteArtifact(name: String) = artifacts.store.delete(name)
+
+    fun renameArtifact(name: String, title: String) {
+        artifacts.store.get(name)?.let { artifacts.store.upsert(it.record.copy(title = title)) }
+    }
+
+    /** Extract hashcat-22000 hashes out of a capture (state is kept on the artifact). */
+    fun analyzeArtifact(name: String): HashExtractResult? = artifacts.analyze(name)
+
+    /** Hash lines previously extracted for an artifact (empty when none). */
+    fun hashLines(name: String): List<String> = artifacts.hashLines(name)
+
+    /** Crack-ready state of an artifact: none | done | fail. */
+    fun artifactHashState(name: String): String =
+        artifacts.store.get(name)?.record?.hashState ?: ArtifactRecord.HASH_NONE
+
+    fun artifactFile(name: String): java.io.File? = artifacts.store.get(name)?.file
+
+    // --- Wordlists -------------------------------------------------------------
+
+    /** Wordlists kept on the phone: the built-in list plus SAF imports and downloads. */
+    val wordlists: WordlistsRepository get() = app.wordlists
+
+    fun listWordlists(): List<Wordlist> = wordlists.store.list()
+
+    fun importWordlist(uri: android.net.Uri): Wordlist? = wordlists.importFrom(uri)
+
+    fun deleteWordlist(fileName: String) = wordlists.store.delete(fileName)
+
+    fun restoreBuiltInWordlist() = wordlists.restoreBuiltIn()
+
+    /** Downloads a wordlist off the main thread; emits byte-level progress. */
+    suspend fun downloadWordlist(
+        url: String,
+        onProgress: (done: Long, total: Long) -> Unit,
+    ): Result<Wordlist> = withContext(Dispatchers.IO) {
+        runCatching { wordlists.download(url, onProgress) }
+    }
 
     // --- AP list polling (scan screen live updates) ----------------------------
 
@@ -935,6 +1005,9 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
                     LineKind.SYSTEM,
                 )
                 negotiateCapture(msg)
+                // The first time a board reports in, make the user accept the
+                // authorised-use notice before any command can be sent.
+                if (!_termsAccepted.value) _termsVisible.value = true
             }
             is DeviceMessage.Status -> {
                 _deviceStatus.value = msg
