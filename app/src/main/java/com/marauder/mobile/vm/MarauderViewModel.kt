@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.marauder.mobile.MarauderApp
 import com.marauder.mobile.capture.CaptureSink
 import com.marauder.mobile.data.AnalyzerKind
+import com.marauder.mobile.data.ArtifactRecord
+import com.marauder.mobile.data.ArtifactsRepository
 import com.marauder.mobile.data.GpxAssembler
 import com.marauder.mobile.data.ListType
 import com.marauder.mobile.data.LiveClassifier
@@ -161,6 +163,14 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     private val _evilPortal = MutableStateFlow(EvilPortalUiState())
     val evilPortal: StateFlow<EvilPortalUiState> = _evilPortal.asStateFlow()
 
+    // --- Missions (supervised live activities) --------------------------------
+    private val artifacts: ArtifactsRepository = app.artifacts
+    private val _activeMission = MutableStateFlow<Mission?>(null)
+    val activeMission: StateFlow<Mission?> = _activeMission.asStateFlow()
+    private var missionSeq = 0L
+    private var apPollJob: Job? = null
+    private val eapolRx = Regex("Received EAPOL:\\s*([0-9A-Fa-f:]{17})")
+
     // Upload handshake replies ({"t":"portal",...}); the upload coroutine awaits
     // "recv" then "set". extraBufferCapacity so tryEmit never drops a reply.
     private val portalEvents = MutableSharedFlow<DeviceMessage.Portal>(extraBufferCapacity = 8)
@@ -211,6 +221,12 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
                         bytes = captureSink.bytes,
                         missedFrames = captureSink.missedFrames,
                     )
+                    _activeMission.value?.let {
+                        if (!it.done) _activeMission.value = it.copy(
+                            bytes = captureSink.bytes,
+                            missedFrames = captureSink.missedFrames,
+                        )
+                    }
                 }
             }
         }
@@ -332,6 +348,167 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         // A GPS-only screen (gpsdata/nmea/tracker/poi) never started a device scan,
         // so only send stopscan for real device scans/attacks.
         if (continuous && !gpsData) usb.send("stopscan")
+    }
+
+    // --- Mission engine -------------------------------------------------------
+
+    /**
+     * Start a supervised live mission: stops whatever the firmware is running,
+     * applies [preCommands] (e.g. `select -a 3`), then sends [command]. A
+     * CAPTURE mission forces `-serial` (stream to the phone) and finalizes an
+     * artifact in the library when it ends. Only one mission at a time.
+     */
+    fun startMission(
+        title: String,
+        command: String,
+        kind: MissionKind,
+        preCommands: List<String> = emptyList(),
+        stopOnIdle: Boolean = true,
+    ): Boolean {
+        if (usb.status.value != UsbSerialManager.Status.CONNECTED) return false
+        if (_activeMission.value?.done == false) stopMission()
+
+        if (kind == MissionKind.CAPTURE && !captureCapable) {
+            _snackbar.tryEmit("This firmware cannot stream captures (no capstream cap)")
+            return false
+        }
+
+        usb.send("stopscan")
+        preCommands.forEach { runCommand(it) }
+
+        var cmd = command.trim()
+        if (kind == MissionKind.CAPTURE) {
+            if (!cmd.contains("-serial")) cmd += " -serial"
+            val path = captureSink.begin(cmd.substringBefore(' '), CaptureFrame.TYPE_PCAP)
+            _capture.value = CaptureUiState(active = true, path = path, kind = "pcap")
+        }
+        runCommand(cmd)
+        _activeMission.value = Mission(
+            id = missionSeq++,
+            title = title,
+            kind = kind,
+            command = cmd,
+            startedAt = System.currentTimeMillis(),
+            stopOnIdle = stopOnIdle,
+        )
+        startMissionPolling(cmd)
+        return true
+    }
+
+    /** Stop the running mission (and finalize its capture, if any). */
+    fun stopMission() {
+        val m = _activeMission.value ?: return
+        if (m.done) return
+        runCommand("stopscan")
+        finalizeMission(m, natural = false)
+    }
+
+    /** Leave a mission screen but keep the mission running (view detaches). */
+    fun missionFinishedUI() {}
+
+    private fun startMissionPolling(cmd: String) {
+        val list = LiveClassifier.of(cmd).list
+        liveJob?.cancel()
+        liveJob = viewModelScope.launch {
+            delay(500)
+            while (isActive && usb.status.value == UsbSerialManager.Status.CONNECTED) {
+                usb.send("jsonstatus")
+                if (list != null) usb.send("jsonlist ${list.code}")
+                delay(1300)
+            }
+        }
+    }
+
+    /** The firmware ended the mission on its own (jsonstatus went idle). */
+    private fun maybeFinishMission(s: DeviceMessage.Status) {
+        val m = _activeMission.value ?: return
+        if (m.done || !m.stopOnIdle) return
+        if (!s.running && System.currentTimeMillis() - m.startedAt > 3000) {
+            finalizeMission(m, natural = true)
+            _snackbar.tryEmit(if (m.kind == MissionKind.CAPTURE) "Capture finished" else "${m.title} stopped")
+        }
+    }
+
+    private fun finalizeMission(m: Mission, natural: Boolean) {
+        liveJob?.cancel()
+        liveJob = null
+        var artifactName = m.artifactName
+        if (captureSink.isActive) {
+            val summary = captureSink.end()
+            _capture.value = CaptureUiState(
+                path = summary?.path,
+                kind = "pcap",
+                bytes = summary?.bytes ?: 0L,
+                missedFrames = summary?.missedFrames ?: 0L,
+            )
+            if (summary != null && summary.bytes > 0) artifactName = registerCapture(summary, m)
+        }
+        _activeMission.value = m.copy(
+            done = true,
+            artifactName = artifactName,
+            bytes = captureSink.bytes,
+            missedFrames = captureSink.missedFrames,
+        )
+    }
+
+    /** Register a closed capture file as an artifact record; returns its name. */
+    private fun registerCapture(s: CaptureSink.Summary, m: Mission?): String? {
+        if (s.bytes <= 0 || s.path.isBlank()) return null
+        val name = File(s.path).name
+        val meta = mutableMapOf(
+            "path" to s.path,
+            "bytes" to s.bytes.toString(),
+        )
+        if (s.missedFrames > 0) meta["missedFrames"] = s.missedFrames.toString()
+        if (m != null) {
+            meta["command"] = m.command
+            if (m.eapolTotal > 0) meta["eapolFrames"] = m.eapolTotal.toString()
+            if (m.ringDrops > 0) meta["ringDrops"] = m.ringDrops.toString()
+        }
+        artifacts.store.upsert(
+            ArtifactRecord(
+                name = name,
+                createdAt = System.currentTimeMillis(),
+                title = m?.title ?: name,
+                kind = name.substringAfterLast('.', ""),
+                meta = meta,
+            ),
+        )
+        return name
+    }
+
+    /** Watch the firmware console for capture-success lines ("Received EAPOL:"). */
+    private fun onConsoleLine(raw: String) {
+        val m = _activeMission.value ?: return
+        if (m.done || m.kind != MissionKind.CAPTURE) return
+        val match = eapolRx.find(raw) ?: return
+        val mac = match.groupValues[1].lowercase()
+        _activeMission.value = m.copy(eapol = m.eapol + (mac to (m.eapol[mac] ?: 0) + 1))
+    }
+
+    // --- Artifacts ------------------------------------------------------------
+
+    fun listArtifacts(): List<com.marauder.mobile.data.Artifact> = artifacts.store.list()
+
+    fun artifact(name: String): com.marauder.mobile.data.Artifact? = artifacts.store.get(name)
+
+    fun deleteArtifact(name: String) = artifacts.store.delete(name)
+
+    // --- AP list polling (scan screen live updates) ----------------------------
+
+    fun startApPolling() {
+        if (apPollJob?.isActive == true) return
+        apPollJob = viewModelScope.launch {
+            while (isActive && usb.status.value == UsbSerialManager.Status.CONNECTED) {
+                usb.send("jsonlist a")
+                delay(2000)
+            }
+        }
+    }
+
+    fun stopApPolling() {
+        apPollJob?.cancel()
+        apPollJob = null
     }
 
     // --- Location permission (requested from the live screen) ----------------
@@ -486,7 +663,10 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             bytes = summary?.bytes ?: _capture.value.bytes,
             missedFrames = summary?.missedFrames ?: _capture.value.missedFrames,
         )
-        summary?.let { _snackbar.tryEmit("Capture saved: ${it.bytes} B → ${it.path}") }
+        summary?.let {
+            registerCapture(it, _activeMission.value)
+            _snackbar.tryEmit("Capture saved: ${it.bytes} B → ${it.path}")
+        }
     }
 
     /** Wardrive using the phone's GPS: run a continuous AP scan and write a
@@ -721,7 +901,10 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     // --- Incoming ------------------------------------------------------------
     private fun onLine(line: String) {
         when (val parsed = LineParser.parse(line)) {
-            is ParsedLine.Console -> if (parsed.raw.isNotBlank()) appendConsole(parsed.raw, LineKind.OUTPUT)
+            is ParsedLine.Console -> if (parsed.raw.isNotBlank()) {
+                onConsoleLine(parsed.raw)
+                appendConsole(parsed.raw, LineKind.OUTPUT)
+            }
             is ParsedLine.Malformed -> appendConsole(parsed.raw, LineKind.OUTPUT)
             is ParsedLine.Structured -> handleMessage(parsed.message)
         }
@@ -737,7 +920,10 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
                 )
                 negotiateCapture(msg)
             }
-            is DeviceMessage.Status -> _deviceStatus.value = msg
+            is DeviceMessage.Status -> {
+                _deviceStatus.value = msg
+                maybeFinishMission(msg)
+            }
             is DeviceMessage.JsonMode ->
                 appendConsole("JSON mode ${if (msg.on) "enabled" else "disabled"}", LineKind.SYSTEM)
             is DeviceMessage.Baud -> {
@@ -750,6 +936,9 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
                 _capture.value = _capture.value.copy(
                     droppedPackets = _capture.value.droppedPackets + msg.n,
                 )
+                _activeMission.value?.let {
+                    if (!it.done) _activeMission.value = it.copy(ringDrops = it.ringDrops + msg.n)
+                }
             }
             is DeviceMessage.Ap -> apBuf.add(msg)
             is DeviceMessage.Sta -> staBuf.add(msg)
@@ -840,8 +1029,10 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         _listLoading.value = null
         // Close any device-fed capture and reset per-connection negotiation. Phone
         // GPS activities (tracker/POI) are independent of the device link, so leave
-        // them running; only drop the GNSS if nothing still needs it.
-        if (captureSink.isActive && !gpsTracking) captureSink.end()
+        // them running; only drop the GNSS if nothing still needs it. Any partial
+        // capture is still registered as an artifact — loss should not be silent.
+        if (captureSink.isActive && !gpsTracking) endCapture()
+        _activeMission.value = null
         wardriving = false
         maybeStopLocation()
         negotiated = false

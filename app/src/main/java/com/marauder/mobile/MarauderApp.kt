@@ -2,6 +2,7 @@ package com.marauder.mobile
 
 import android.app.Application
 import com.marauder.mobile.capture.CaptureSink
+import com.marauder.mobile.data.ArtifactsRepository
 import com.marauder.mobile.data.SettingsRepository
 import com.marauder.mobile.location.LocationRepository
 import com.marauder.mobile.usb.UsbSerialManager
@@ -23,11 +24,16 @@ class MarauderApp : Application() {
     lateinit var location: LocationRepository
         private set
 
+    /** Library of on-phone captures (pcap/gpx/log) with a JSON index. */
+    lateinit var artifacts: ArtifactsRepository
+        private set
+
     override fun onCreate() {
         super.onCreate()
         usb = UsbSerialManager(this)
         settings = SettingsRepository(this)
         captureSink = CaptureSink(this)
         location = LocationRepository(this)
+        artifacts = ArtifactsRepository(this)
     }
 }
