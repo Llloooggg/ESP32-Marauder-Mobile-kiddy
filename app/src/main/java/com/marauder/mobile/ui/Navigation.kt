@@ -53,6 +53,7 @@ import com.marauder.mobile.ui.screens.HomeScreen
 import com.marauder.mobile.ui.screens.ListScreen
 import com.marauder.mobile.ui.screens.LiveActivityScreen
 import com.marauder.mobile.ui.screens.MenuScreen
+import com.marauder.mobile.ui.screens.PostureScreen
 import com.marauder.mobile.ui.screens.SettingsScreen
 import com.marauder.mobile.ui.screens.MissionScreen
 import com.marauder.mobile.ui.screens.ScanScreen
@@ -82,6 +83,7 @@ private object Routes {
     const val LIVE = "live"
     const val ABOUT = "about"
     const val SETTINGS = "settings"
+    const val POSTURE = "posture"
     const val FLASH = "flash"
     const val EVIL_PORTAL = "evil_portal_screen"
 
@@ -167,6 +169,7 @@ fun AppRoot() {
                     onOpenFlash = { nav.navigate(Routes.FLASH) },
                     onOpenAbout = { nav.navigate(Routes.ABOUT) },
                     onOpenSettings = { nav.navigate(Routes.SETTINGS) },
+                    onOpenPosture = { nav.navigate(Routes.POSTURE) },
                     onOpenCatalogItem = { item -> handleAction(item, nav, vm) },
                     onDisconnect = { vm.disconnect() },
                 )
@@ -298,6 +301,15 @@ fun AppRoot() {
                 EvilPortalScreen(vm = vm, onBack = { nav.popBackStack() })
             }
 
+            composable(Routes.POSTURE) {
+                PostureScreen(
+                    vm = vm,
+                    onBack = { nav.popBackStack() },
+                    onOpenLive = { title, cmd -> nav.navigate(Routes.live(title, cmd)) },
+                    onOpenScan = { nav.navigate(Routes.SCAN) },
+                )
+            }
+
             composable(
                 route = "${Routes.ANALYZER}/{kind}/{cmd}",
                 arguments = listOf(
@@ -389,5 +401,6 @@ private fun handleAction(
         MenuAction.OpenConsole -> nav.navigate(Routes.CONSOLE)
         MenuAction.OpenFlash -> nav.navigate(Routes.FLASH)
         MenuAction.OpenEvilPortal -> nav.navigate(Routes.EVIL_PORTAL)
+        MenuAction.OpenPosture -> nav.navigate(Routes.POSTURE)
     }
 }

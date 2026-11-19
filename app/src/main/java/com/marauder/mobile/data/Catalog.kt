@@ -120,6 +120,10 @@ sealed interface MenuAction {
     /** Open the Evil Portal screen: pick an HTML page on the phone, upload it to
      *  the device (no SD card), target a scanned AP, run, and watch credentials. */
     data object OpenEvilPortal : MenuAction
+
+    /** Open the network-posture screen: join a network with the board, sweep that
+     *  segment (ping/ARP), then port-scan the hosts the board actually found. */
+    data object OpenPosture : MenuAction
 }
 
 data class MenuItem(
@@ -212,6 +216,13 @@ object Catalog {
             MenuScreen(
                 "wifi_scanners", "Scanners",
                 listOf(
+                    MenuItem(
+                        "Network Posture",
+                        "join a network · sweep the segment · port scan hosts",
+                        Icons.Filled.Language,
+                        Accent.SCANNER,
+                        MenuAction.OpenPosture,
+                    ),
                     MenuItem("Ping Scan", "pingscan", Icons.Filled.NetworkCheck, Accent.SCANNER, MenuAction.Send("pingscan")),
                     MenuItem("ARP Scan", "arpscan -f", Icons.Filled.Lan, Accent.SCANNER, MenuAction.Send("arpscan -f")),
                     MenuItem("Port Scan All", "portscan -a -t 0", Icons.Filled.SettingsEthernet, Accent.SCANNER, MenuAction.Send("portscan -a -t 0")),

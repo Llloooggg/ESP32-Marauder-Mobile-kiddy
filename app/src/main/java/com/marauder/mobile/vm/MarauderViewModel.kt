@@ -10,6 +10,7 @@ import com.marauder.mobile.data.ArtifactRecord
 import com.marauder.mobile.data.ArtifactsRepository
 import com.marauder.mobile.data.GpxAssembler
 import com.marauder.mobile.data.DeviceInfoForJournal
+import com.marauder.mobile.data.FirmwareArg
 import com.marauder.mobile.data.HashExtractResult
 import com.marauder.mobile.data.JournalEntry
 import com.marauder.mobile.data.ListCsv
@@ -1022,8 +1023,80 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         return true
     }
 
-    /** Refuse a targeted action and say why, in the console, the journal and the UI. */
-    private fun refusePin(bssid: String, reason: String) {
+    // --- Network posture: join with the board, then work that segment -----------
+
+    /**
+     * Join a scanned network with the board: `join -a <slot> -p <password>`.
+     *
+     * The firmware takes the SSID from whatever sits in that slot, so the slot is
+     * resolved from the BSSID here and now — a stale slot would associate the board
+     * with a different network while the screen still shows the one the user picked.
+     * The password is quoted for the firmware's own parser (which honours quotes but
+     * has no escapes), and a password it could not take is refused rather than
+     * silently truncated. The password is never written to the journal.
+     */
+    fun joinNetwork(bssid: String, password: String): Boolean {
+        if (usb.status.value != UsbSerialManager.Status.CONNECTED) return false
+        val pin = ledger.pin(bssid)
+        if (pin == null) {
+            refusePin(bssid, "join: the board's scan list no longer contains this network, so its slot is unknown.")
+            return false
+        }
+        if (password.isEmpty()) {
+            _snackbar.tryEmit("This network needs a password — an open one needs no join")
+            return false
+        }
+        val quoted = quoteArgument(password)
+        if (quoted == null) {
+            _snackbar.tryEmit("That password cannot be sent to this firmware (quote or control characters)")
+            appendConsole("✗ join refused: password cannot be quoted for the firmware", LineKind.ERROR)
+            return false
+        }
+        appendConsole(
+            "joining ${pin.essid.ifBlank { "(hidden)" }} · $bssid (slot ${pin.index}) — " +
+                "the firmware reports association only in its console text",
+            LineKind.SYSTEM,
+        )
+        runCommand("join -a ${pin.index} -p $quoted")
+        artifacts.journal.record(
+            JournalEntry.COMMAND, "join ${pin.essid.ifBlank { "(hidden)" }}",
+            mapOf("target_bssid" to bssid, "target_slot" to pin.index.toString()),
+        )
+        return true
+    }
+
+    /** Join using credentials already saved on the board (`join -s`). */
+    fun joinSavedNetwork() {
+        runCommand("join -s")
+        artifacts.journal.record(JournalEntry.COMMAND, "join saved credentials", emptyMap())
+    }
+
+    /**
+     * Command to port-scan one discovered host. [ip] is looked up in the board's own
+     * host list at press time, because `portscan -a -t <slot>` addresses a slot in a
+     * list that every new ping/arp scan rewrites. [service] runs the service scan
+     * instead (`portscan -s <service>`), which needs no host selection.
+     */
+    fun hostScanCommand(ip: String, service: String? = null): String? {
+        service?.let { return "portscan -s $it" }
+        val slot = _ips.value.firstOrNull { it.ip == ip }?.index
+        if (slot == null) {
+            _snackbar.tryEmit("$ip is not in the board's host list anymore — refreshing")
+            refreshList(ListType.IPS)
+            return null
+        }
+        return "portscan -a -t $slot"
+    }
+
+    /**
+     * Wrap one argument so the firmware's `parseCommand` keeps it whole. The rules live
+     * in [FirmwareArg] — quotes are honoured but there is no escaping, so a value with
+     * both quote kinds, or a control character that would end the command line early,
+     * cannot be sent at all and is refused instead of half-delivered.
+     */
+    private fun quoteArgument(value: String): String? = FirmwareArg.wrap(value)
+
+    /** Refuse a targeted action and say why, in the console, the journal and the UI. */    private fun refusePin(bssid: String, reason: String) {
         _targetPin.value = TargetPinState.Refused(bssid, reason)
         appendConsole("✗ target not pinned: $reason", LineKind.ERROR)
         artifacts.journal.record(

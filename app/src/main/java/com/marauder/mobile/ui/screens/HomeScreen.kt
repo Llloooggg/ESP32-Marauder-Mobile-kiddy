@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.OpenInNew
@@ -77,6 +78,7 @@ import com.marauder.mobile.ui.components.StatusPanel
 import com.marauder.mobile.ui.theme.CatAttack
 import com.marauder.mobile.ui.theme.CatDevice
 import com.marauder.mobile.ui.theme.CatGps
+import com.marauder.mobile.ui.theme.CatScanner
 import com.marauder.mobile.ui.theme.CatSniffer
 import com.marauder.mobile.ui.theme.CatWifi
 import com.marauder.mobile.ui.theme.Danger
@@ -108,6 +110,7 @@ fun HomeScreen(
     onOpenFlash: () -> Unit,
     onOpenAbout: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenPosture: () -> Unit,
     onOpenCatalogItem: (MenuItem) -> Unit,
     onDisconnect: () -> Unit,
 ) {
@@ -215,6 +218,13 @@ fun HomeScreen(
                         icon = Icons.Filled.Folder,
                         tint = CatSniffer,
                         onClick = onOpenArtifacts,
+                    )
+                    BigAction(
+                        label = "Network posture",
+                        hint = "join a network with the board · find its hosts · check open ports",
+                        icon = Icons.Filled.Language,
+                        tint = CatScanner,
+                        onClick = onOpenPosture,
                     )
                 }
             }
