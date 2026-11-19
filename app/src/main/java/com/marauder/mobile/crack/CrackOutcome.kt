@@ -21,4 +21,21 @@ object CrackOutcome {
                 "checked by any wordlist (reasons above)."
         }
     }
+
+    /**
+     * Under a recovered password: which of the extracted records actually verify it.
+     *
+     * One capture can hold several client messages from the same network, each its own
+     * handshake attempt, so the same password is expected to verify more than one line.
+     * Printing one result card per line made that look like the password had been found
+     * twice; one card that names the lines says the same thing without the illusion.
+     */
+    fun verified(lines: List<Int>, total: Int): String {
+        val which = lines.joinToString(", ") { "#$it" }
+        return when {
+            total <= 1 -> "verified by the only hash line (#$which)"
+            lines.size == 1 -> "verified by 1 of $total hash lines (#$which)"
+            else -> "verified by ${lines.size} of $total hash lines (#$which)"
+        }
+    }
 }

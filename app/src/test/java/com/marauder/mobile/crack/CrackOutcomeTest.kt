@@ -34,4 +34,31 @@ class CrackOutcomeTest {
         assertTrue(text, text.contains("0 of 4"))
         assertTrue("no password advice when nothing could be checked", !text.contains("bigger list"))
     }
+
+    /**
+     * The field capture holds two independent client messages from one network; both
+     * verify the same password. One card must say that plainly instead of showing the
+     * password twice as if two passwords had been recovered.
+     */
+    @Test
+    fun severalLinesThatVerifyOnePasswordAreNamedOnOneLine() {
+        val text = CrackOutcome.verified(listOf(2, 5), total = 5)
+        assertTrue(text, text.contains("2 of 5"))
+        assertTrue(text, text.contains("#2, #5"))
+    }
+
+    @Test
+    fun oneVerifyingLineOutOfManySaysOne() {
+        val text = CrackOutcome.verified(listOf(3), total = 5)
+        assertTrue(text, text.contains("1 of 5"))
+        assertTrue(text, text.contains("#3"))
+        assertTrue("must not imply a second line", !text.contains("#3,"))
+    }
+
+    @Test
+    fun aSingleLineCaptureIsNotCountedAsAFraction() {
+        val text = CrackOutcome.verified(listOf(1), total = 1)
+        assertTrue(text, text.contains("the only hash line"))
+        assertTrue("no '1 of 1' arithmetic on a one-line capture", !text.contains("1 of 1"))
+    }
 }

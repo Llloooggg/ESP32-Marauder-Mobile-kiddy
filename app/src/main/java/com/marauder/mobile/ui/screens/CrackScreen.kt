@@ -123,13 +123,27 @@ fun CrackScreen(
                     pmkid = state.pmkid,
                     handshakes = state.handshakes,
                     lines = state.hashLines.size,
-                    cracked = state.alreadyCracked ?: state.found.values.firstOrNull(),
+                    // Only a password stored on the artifact was recovered *before* this run.
+                    // This run has its own cards below; echoing its result here as "before"
+                    // would say the app knew something it learned a second ago.
+                    cracked = state.alreadyCracked,
                 )
             }
 
-            state.found.entries.sortedBy { it.key }.forEach { (index, password) ->
-                item { FoundCard(index = index, password = password) }
-            }
+            // One card per password, not per line: several client messages from the same
+            // network are separate handshake attempts and all verify the same password.
+            state.found.entries
+                .groupBy({ it.value }, { it.key + 1 })
+                .entries
+                .sortedBy { it.value.first() }
+                .forEach { (password, lines) ->
+                    item {
+                        FoundCard(
+                            password = password,
+                            note = CrackOutcome.verified(lines, state.hashLines.size),
+                        )
+                    }
+                }
 
             state.error?.let { err ->
                 item {
@@ -414,7 +428,7 @@ private fun TargetCard(title: String, pmkid: Int, handshakes: Int, lines: Int, c
 }
 
 @Composable
-private fun FoundCard(index: Int, password: String) {
+private fun FoundCard(password: String, note: String) {
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = Success.copy(alpha = 0.16f),
@@ -432,7 +446,11 @@ private fun FoundCard(index: Int, password: String) {
                     color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.Bold,
                 )
-                Text("hash #${index + 1}", style = MaterialTheme.typography.labelSmall, color = MarauderTextDim)
+                Text(
+                    note,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MarauderTextDim,
+                )
             }
         }
     }
