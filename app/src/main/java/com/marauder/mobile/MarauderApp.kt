@@ -4,6 +4,8 @@ import android.app.Application
 import com.marauder.mobile.capture.CaptureSink
 import com.marauder.mobile.crack.CrackEngine
 import com.marauder.mobile.crack.JvmCrackEngine
+import com.marauder.mobile.crack.NativeCpuCrackEngine
+import com.marauder.mobile.crack.NativeCrypto
 import com.marauder.mobile.crack.NoopCrackEngine
 import com.marauder.mobile.data.ArtifactsRepository
 import com.marauder.mobile.data.PcapExtractionBridge
@@ -38,10 +40,17 @@ class MarauderApp : Application() {
         private set
 
     /**
-     * The cracker backend the UI drives. The build swaps this for the native (NDK)
-     * engine once it is compiled in; until then the placeholder reports honestly.
+     * The cracker backend the UI drives. The native (NDK) engine is used only when it
+     * loaded, agrees on the material protocol and passed its own known-answer test on
+     * this device; otherwise the JVM engine runs and [crackEngineInfo] states why the
+     * native one did not (see `NativeCrypto.unavailableReason`).
      */
     var crackEngine: CrackEngine = NoopCrackEngine
+        private set
+
+    /** Which cracker is live and, when it is not the native one, the reason why. */
+    var crackEngineInfo: String = "not initialised"
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -52,6 +61,8 @@ class MarauderApp : Application() {
         artifacts = ArtifactsRepository(this)
         wordlists = WordlistsRepository(this)
         artifacts.bridge = PcapExtractionBridge()
-        crackEngine = JvmCrackEngine()
+        crackEngineInfo = NativeCrypto.unavailableReason?.let { "JVM engine: $it" }
+            ?: "native CPU engine (known-answer self-test passed on this device)"
+        crackEngine = if (NativeCrypto.available) NativeCpuCrackEngine() else JvmCrackEngine()
     }
 }

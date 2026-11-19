@@ -586,10 +586,47 @@ class ExtractorTest {
 
         val blob = Material.write(listOf(m))
         assertEquals("MKMT", String(blob, 0, 4, Charsets.ISO_8859_1))
-        assertEquals(1, blob[7].toInt())                       // version (big-endian u32)
+        assertEquals(2, blob[7].toInt())                       // version (big-endian u32)
         assertEquals(1, blob[11].toInt())                      // one target
         assertTrue(blob.size > 40)
     }
+
+    /**
+     * The native engines verify exactly what the Kotlin verifier verifies. A 22000
+     * line can hold its supplicant nonce in either of two EAPOL layouts, so every
+     * layout the parser considers plausible has to reach the native side: otherwise
+     * the same hash cracks on one engine and comes back "not found" on the other.
+     */
+    @Test
+    fun materialCarriesEveryNonceLayoutTheNativeEnginesMustTry() {
+        val snonce = ByteArray(32) { (it + 5).toByte() }
+        val m2 = eapolKey(keyInfo = 0x010a, replay = 4, nonce = snonce, body = m2Body(), mic = ByteArray(16))
+
+        // A frame as it appears on air: the Key IV/RSC/ID region is empty on a CCMP
+        // handshake, so the descriptor says where the nonce is — one thing to try.
+        val air = m2.copyOf().also { java.util.Arrays.fill(it, 17, 49, 0) }
+        // A frame where both regions hold bytes (a TKIP handshake carries a real Key
+        // IV): the blob no longer says which layout produced it, so both must travel.
+        val both = m2.copyOf()
+
+        val airMaterial = CrackCore.parse(lineWithMic(air, anonce))!!.material()
+        val bothMaterial = CrackCore.parse(lineWithMic(both, anonce))!!.material()
+        assertEquals("a descriptor that says where the nonce is gives one set", 1, airMaterial.pkeSets.size)
+        assertEquals("a descriptor that could be either layout gives both", 2, bothMaterial.pkeSets.size)
+        assertArrayEquals("the standard placement is tried first in both cases",
+            airMaterial.pkeSets[0].p100, bothMaterial.pkeSets[0].p100)
+        assertTrue("the second set expands the other nonce placement",
+            !bothMaterial.pkeSets[0].p100.contentEquals(bothMaterial.pkeSets[1].p100))
+        assertEquals(airMaterial.micMsgs.size, bothMaterial.micMsgs.size)
+
+        val blob = Material.write(listOf(airMaterial, bothMaterial))
+        assertEquals(2, blob[11].toInt())
+        assertTrue(blob.size > 200)
+    }
+
+    /** A 22000 handshake line carrying [eapol] as its stored blob, salted with the test SSID. */
+    private fun lineWithMic(eapol: ByteArray, anonceField: ByteArray): String =
+        "WPA*02*${"01".repeat(16)}*$apMacHex*$staMacHex*$ssidHex*${hexOf(anonceField)}*${hexOf(eapol)}*a2"
 
     // ---- byte helpers ------------------------------------------------------------
 

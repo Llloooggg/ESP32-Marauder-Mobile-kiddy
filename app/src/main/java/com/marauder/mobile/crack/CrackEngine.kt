@@ -22,6 +22,26 @@ sealed interface CrackEvent {
 
 enum class Backend { AUTO, CPU, GPU }
 
+/**
+ * A backend this build cannot honour, in words the UI shows verbatim, or null when it
+ * can. `AUTO` and `CPU` mean the same thing until a GPU engine is linked in; `GPU` is
+ * refused rather than quietly run as CPU, because a run labelled "GPU" that used the
+ * CPU is a result nobody can act on.
+ */
+fun backendGap(backend: Backend): String? = when (backend) {
+    Backend.GPU -> "GPU (Vulkan) backend is not linked into this build. The CPU engine is what would " +
+        "run; choose CPU to run it explicitly."
+    Backend.AUTO, Backend.CPU -> null
+}
+
+/**
+ * hashcat's mode-22000 self-test hash (ST_HASH in module_22000.c): essid
+ * "hashcat-essid", password "hashcat!". Both engines bench against this, so their
+ * numbers mean the same work.
+ */
+internal const val BENCH_HASH =
+    "WPA*01*4d4fe7aac3a2cecab195321ceb99a7d0*fc690c158264*f4747f87f9f4*686173686361742d6573736964***"
+
 data class CrackConfig(
     /** hashcat 22000 lines (one per target network). */
     val hashLines: List<String>,

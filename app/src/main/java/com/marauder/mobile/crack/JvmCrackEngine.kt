@@ -41,6 +41,12 @@ class JvmCrackEngine : CrackEngine {
     override fun run(config: CrackConfig): Flow<CrackEvent> = flow {
         stopRequested.set(false)
 
+        backendGap(config.backend)?.let {
+            emit(CrackEvent.Error(it))
+            emit(CrackEvent.Finished(completed = false))
+            return@flow
+        }
+
         val parsed = config.hashLines.mapIndexedNotNull { index, line ->
             CrackCore.parse(line)?.let { index to it }
         }
@@ -118,13 +124,4 @@ class JvmCrackEngine : CrackEngine {
     private fun countWords(file: File): Long = runCatching {
         file.bufferedReader().use { it.lineSequence().count { line -> line.isNotEmpty() }.toLong() }
     }.getOrDefault(0L)
-
-    private companion object {
-        /**
-         * hashcat's mode-22000 self-test hash (ST_HASH in module_22000.c):
-         * essid "hashcat-essid", password "hashcat!".
-         */
-        const val BENCH_HASH =
-            "WPA*01*4d4fe7aac3a2cecab195321ceb99a7d0*fc690c158264*f4747f87f9f4*686173686361742d6573736964***"
-    }
 }

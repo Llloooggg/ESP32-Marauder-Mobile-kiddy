@@ -20,6 +20,9 @@ val keystoreProps = Properties().apply {
 android {
     namespace = "com.marauder.mobile"
     compileSdk = 35
+    // Pinned so a fresh clone builds the same native code, and so the known-answer
+    // test that gates the native engine was compiled by a compiler this repo names.
+    ndkVersion = "27.0.12077973"
 
     defaultConfig {
         // Identity of this build. A different applicationId lets it install SIDE BY
@@ -66,6 +69,16 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+    }
+    // The native WPA2 core (see src/main/cpp). It is gated at runtime by its own
+    // known-answer self-test: if the library is missing for an ABI, or the test fails
+    // on a device, the app falls back to the JVM engine and says so on the crack screen
+    // rather than running something half-verified.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
     buildFeatures {
         compose = true

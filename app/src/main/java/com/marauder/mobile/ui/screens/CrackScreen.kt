@@ -223,19 +223,29 @@ fun CrackScreen(
 
             item { SectionLabel("Backend") }
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Backend.entries.forEach { backend ->
-                        Choice(
-                            label = backend.name,
-                            hint = when (backend) {
-                                Backend.AUTO -> "fastest available"
-                                Backend.CPU -> "phone cores"
-                                Backend.GPU -> "graphics cores"
-                            },
-                            selected = state.backend == backend,
-                            onClick = { cvm.setBackend(backend) },
-                        )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Backend.entries.forEach { backend ->
+                            Choice(
+                                label = backend.name,
+                                hint = when (backend) {
+                                    Backend.AUTO -> "fastest available"
+                                    Backend.CPU -> "phone cores"
+                                    Backend.GPU -> "graphics cores"
+                                },
+                                selected = state.backend == backend,
+                                onClick = { cvm.setBackend(backend) },
+                            )
+                        }
                     }
+                    // Which cracker this build really runs. A run whose rate came from a
+                    // different engine than the one selected here is a number nobody can
+                    // interpret, so the engine is named instead of assumed.
+                    Text(
+                        state.engineInfo,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MarauderTextDim,
+                    )
                 }
             }
 

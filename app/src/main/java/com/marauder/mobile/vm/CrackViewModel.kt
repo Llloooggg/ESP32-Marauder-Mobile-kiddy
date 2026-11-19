@@ -58,6 +58,14 @@ data class CrackUiState(
      */
     val saeOnly: List<String> = emptyList(),
     val aimedBssid: String? = null,
+
+    /**
+     * Which cracker this build is running. The native engine is used only when it
+     * loaded, agrees on the target-material protocol and passed its known-answer
+     * self-test on this device; when it did not, this says why, instead of the UI
+     * quietly running a different engine than the one it implies.
+     */
+    val engineInfo: String = "",
 ) {
     val canRun: Boolean get() = hashLines.isNotEmpty() && selected.isNotEmpty() && !running
     val progress: Float get() = if (totalGuesses <= 0) 0f else (doneGuesses.toFloat() / totalGuesses).coerceIn(0f, 1f)
@@ -97,6 +105,7 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
             alreadyCracked = record?.meta?.get("cracked"),
             saeOnly = KeyManagement.saeOnly(record?.meta ?: emptyMap()),
             aimedBssid = record?.meta?.get(ArtifactRecord.TARGET_BSSID),
+            engineInfo = app.crackEngineInfo,
             wordlists = wordlists,
             selected = _state.value.selected.filter { name -> wordlists.any { it.fileName == name } }
                 .ifEmpty { listOfNotNull(app.wordlists.preferredWordlist()?.fileName) },

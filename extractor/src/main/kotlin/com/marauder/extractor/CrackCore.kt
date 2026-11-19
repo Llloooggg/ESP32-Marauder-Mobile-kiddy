@@ -86,34 +86,27 @@ class WpaTarget internal constructor(
      * interpreted: the native side gets the same pre-computed buffers Kotlin's
      * [verifyWithPmk] uses, and both must agree for a candidate to be reported.
      *
-     * It carries the FIRST [PkeSet] — the nonce layout the blob's own bytes point at.
-     * A line whose SNonce lives in the other layout is still cracked here, by the
-     * remaining candidate; the native engine would report "not found" for it, and the
-     * caller falls back to this implementation rather than reporting a wrong answer.
-     * (Feeding every candidate to the native engines is a transport change: the TLV
-     * needs one pke set per candidate.)
+     * Every [PkeSet] travels, not just the likeliest one. A line whose supplicant
+     * nonce sits in the other EAPOL layout would otherwise be cracked here and
+     * reported "not found" by the native engine, and two engines of the same app
+     * disagreeing about the same hash is the kind of result nobody can act on.
      */
-    fun material(): TargetMaterial {
-        val primary = pkeSets?.firstOrNull()
-        return TargetMaterial(
-            kind = if (kind == HashKind.PMKID) 1 else 2,
-            keyver = keyver,
-            salt = pmkSalt,
-            expected = expected,
-            pmkidData = pmkidData ?: ByteArray(0),
-            pke100 = primary?.p100 ?: ByteArray(0),
-            pke102 = primary?.p102 ?: ByteArray(0),
-            pkeStd = primary?.pstd ?: ByteArray(0),
-            micMsgs = micMsgs?.toList() ?: emptyList(),
-        )
-    }
+    fun material(): TargetMaterial = TargetMaterial(
+        kind = if (kind == HashKind.PMKID) 1 else 2,
+        keyver = keyver,
+        salt = pmkSalt,
+        expected = expected,
+        pmkidData = pmkidData ?: ByteArray(0),
+        pkeSets = pkeSets?.toList() ?: emptyList(),
+        micMsgs = micMsgs?.toList() ?: emptyList(),
+    )
 }
 
 /**
  * One set of pairwise-key-expansion buffers, built for one placement of the
  * supplicant nonce (SNonce) inside the stored EAPOL blob.
  */
-internal class PkeSet(val p100: ByteArray, val p102: ByteArray, val pstd: ByteArray)
+data class PkeSet(val p100: ByteArray, val p102: ByteArray, val pstd: ByteArray)
 
 /** One target's pre-computed verification buffers, in transport form. */
 data class TargetMaterial(
@@ -122,9 +115,7 @@ data class TargetMaterial(
     val salt: ByteArray,            // PBKDF2 salt == raw SSID
     val expected: ByteArray,        // 16 bytes: PMKID or Key MIC
     val pmkidData: ByteArray,
-    val pke100: ByteArray,
-    val pke102: ByteArray,
-    val pkeStd: ByteArray,
+    val pkeSets: List<PkeSet>,      // one per plausible SNonce placement, most likely first
     val micMsgs: List<ByteArray>,
 )
 
@@ -136,7 +127,12 @@ data class TargetMaterial(
 object Material {
 
     const val MAGIC = "MKMT"
-    const val VERSION = 1
+    /**
+     * v2: each target carries its pke sets as a list (one per plausible supplicant
+     * nonce placement) instead of one fixed triple. v1 carried a single triple, which
+     * made the native engines blind to the other EAPOL layout.
+     */
+    const val VERSION = 2
 
     fun write(targets: List<TargetMaterial>): ByteArray {
         require(targets.isNotEmpty()) { "no targets to serialise" }
@@ -157,9 +153,10 @@ object Material {
             vec(t.salt)
             out.write(t.expected)
             vec(t.pmkidData)
-            vec(t.pke100)
-            vec(t.pke102)
-            vec(t.pkeStd)
+            u32(t.pkeSets.size)
+            t.pkeSets.forEach { set ->
+                vec(set.p100); vec(set.p102); vec(set.pstd)
+            }
             u32(t.micMsgs.size)
             t.micMsgs.forEach { vec(it) }
         }
