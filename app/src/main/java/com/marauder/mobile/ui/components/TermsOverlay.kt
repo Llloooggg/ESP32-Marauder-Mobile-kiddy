@@ -73,6 +73,11 @@ fun TermsOverlay(onAccept: () -> Unit, onExit: () -> Unit) {
                 "Keep captures you did not create yourself out of this app: delete them, and delete anything you export once the audit is done.",
                 MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Bullet(
+                "This is the only permission step. Accepting once unlocks every command the connected board supports — no mode switch, no dialog per action. " +
+                    "What each command sends, and against which network, stays written on the screen you press it from.",
+                MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             Spacer(Modifier.height(8.dp))
             Column(
