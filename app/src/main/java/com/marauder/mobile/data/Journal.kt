@@ -119,7 +119,13 @@ class Journal(private val dir: File, private val maxOutputBytes: Long = MAX_OUTP
         write(JournalEntry(System.currentTimeMillis(), JournalEntry.OUTPUT, text))
     }
 
-    /** Close the journal and report what was written. */
+    /**
+     * Close the journal and report what was written.
+     *
+     * A session that wrote nothing leaves no file: an empty journal is not a record of anything, and
+     * keeping it filled the library with `journal 3 · 0 B` rows that looked like files to look at.
+     * Nothing is hidden by this - an empty file carries no evidence to carry.
+     */
     @Synchronized
     fun close(): JournalSummary? {
         val w = writer ?: return null
@@ -127,6 +133,10 @@ class Journal(private val dir: File, private val maxOutputBytes: Long = MAX_OUTP
         runCatching { w.flush(); w.close() }
         writer = null
         current = null
+        if (count == 0) {
+            runCatching { f?.delete() }
+            return null
+        }
         return f?.let { JournalSummary(it, count, truncated) }
     }
 
