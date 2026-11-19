@@ -48,9 +48,9 @@ class CrackInspectTest {
         val i = CrackCore.parse(t.joinToString("*"))
         val insp = CrackCore.inspect(t.joinToString("*"))
 
-        // parse() still accepts it (it is a well-formed line) and the correct
-        // password still fails: exactly the confusing case the inspector exists for.
-        assertTrue(i!!.verify("hashcat!") == false)
+        // A line whose AP nonce is zeros is not a credential: parse() refuses it, so
+        // no engine spends a wordlist on it, and the inspector names the reason.
+        assertNull(i)
         assertFalse(insp.crackable)
         assertTrue(insp.problems.any { it.contains("ANonce is all zeros") })
     }

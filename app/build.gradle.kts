@@ -38,8 +38,8 @@ android {
         // and the About line both print `versionName (versionCode)`, and a capture made last week
         // can only be re-read against the build that made it if that pair changed when behaviour did.
         // So: any build that changes behaviour gets a new versionCode.
-        versionCode = 26
-        versionName = "1.4.18-kiddy"
+        versionCode = 27
+        versionName = "1.4.19-kiddy"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -70,6 +70,13 @@ data class CrackUiState(
     val error: String? = null,
 
     /**
+     * How many lines the cracker will actually verify (the rest are reported line by
+     * line in [inspections]). A run over zero testable hashes can only spend time and
+     * end in "not found", so it is not offered.
+     */
+    val testable: Int = 0,
+
+    /**
      * What each extracted hash line really holds, with the reasons a line cannot
      * be cracked. This is the answer to "I tried the right password and it did
      * not match" — the line, not the password, is usually the problem.
@@ -93,7 +100,7 @@ data class CrackUiState(
      */
     val engineReport: List<String> = emptyList(),
 ) {
-    val canRun: Boolean get() = hashLines.isNotEmpty() && selected.isNotEmpty() && !running
+    val canRun: Boolean get() = hashLines.isNotEmpty() && selected.isNotEmpty() && !running && testable > 0
     val progress: Float get() = if (totalGuesses <= 0) 0f else (doneGuesses.toFloat() / totalGuesses).coerceIn(0f, 1f)
     val totalWords: Long get() = wordlists.filter { it.fileName in selected }.sumOf { it.lines }
 }
@@ -136,6 +143,7 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
             targetTitle = record?.title?.ifBlank { artifactName } ?: artifactName,
             hashLines = lines,
             inspections = lines.map { CrackCore.inspect(it) },
+            testable = lines.count { CrackCore.parse(it) != null },
             pmkid = record?.meta?.get("pmkid")?.toIntOrNull() ?: 0,
             handshakes = record?.meta?.get("handshakes")?.toIntOrNull() ?: 0,
             alreadyCracked = record?.meta?.get("cracked"),

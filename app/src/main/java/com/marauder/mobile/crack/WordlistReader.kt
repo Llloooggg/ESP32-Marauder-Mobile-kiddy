@@ -17,7 +17,7 @@ import java.io.File
  * agree on what a word is, so they share this reader rather than each opening the file
  * its own way.
  */
-internal object Wordlist {
+internal object WordlistReader {
 
     /** Opens [file] with its byte-order mark consumed and the matching charset. */
     fun reader(file: File): BufferedReader {

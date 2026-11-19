@@ -82,7 +82,7 @@ class JvmCrackEngine : CrackEngine {
         var discarded = 0
 
         outer@ for (list in lists) {
-            Wordlist.reader(list).use { reader ->
+            WordlistReader.reader(list).use { reader ->
                 while (true) {
                     val word = reader.readLine() ?: break
                     if (word.isEmpty()) continue
@@ -127,5 +127,5 @@ class JvmCrackEngine : CrackEngine {
         stopRequested.set(true)
     }
 
-    private fun countWords(file: File): Long = runCatching { Wordlist.count(file) }.getOrDefault(0L)
+    private fun countWords(file: File): Long = runCatching { WordlistReader.count(file) }.getOrDefault(0L)
 }

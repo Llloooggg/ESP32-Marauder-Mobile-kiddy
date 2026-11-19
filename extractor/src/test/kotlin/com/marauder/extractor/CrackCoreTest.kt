@@ -42,6 +42,57 @@ class CrackCoreTest {
         assertTrue(!t.verify("Hashcat!"))
     }
 
+    /** A field of zeros is not key material: neither a nonce nor a MIC can be verified. */
+    @Test
+    fun zeroKeyMaterialIsRefusedInsteadOfTriedForever() {
+        val fields = handshakeLine.split("*").toMutableList()
+
+        val zeroAnonce = fields.toMutableList().apply { this[6] = "0".repeat(64) }.joinToString("*")
+        assertNull(CrackCore.parse(zeroAnonce))
+        val noApMessage = CrackCore.inspect(zeroAnonce)
+        assertTrue(!noApMessage.crackable)
+        assertTrue(noApMessage.problems.any { it.contains("ANonce is all zeros") })
+
+        val zeroMic = fields.toMutableList().apply { this[2] = "0".repeat(32) }.joinToString("*")
+        assertNull(CrackCore.parse(zeroMic))
+        assertTrue(CrackCore.inspect(zeroMic).problems.any { it.contains("MIC is all zeros") })
+    }
+
+    /** A line cut short used to throw while the screen was drawing it. */
+    @Test
+    fun aTruncatedLineIsExplainedInsteadOfCrashing() {
+        val truncated = handshakeLine.split("*").take(7).joinToString("*")
+        assertNull(CrackCore.parse(truncated))
+        val insp = CrackCore.inspect(truncated)
+        assertTrue(!insp.crackable)
+        assertTrue(insp.problems.any { it.contains("fields") })
+    }
+
+    /**
+     * The screen may only offer what the engines will verify, and may only explain a
+     * refusal it can name: `inspect().crackable` and `parse() != null` must agree on
+     * every line, or "Start" is disabled for a hash the screen calls fine.
+     */
+    @Test
+    fun theScreenAndTheEnginesAgreeOnEveryLine() {
+        val p = handshakeLine.split("*")
+        val cases = listOf(
+            handshakeLine,
+            pmkidLine,
+            "WPA*02*",
+            "not a hash at all",
+            p.toMutableList().apply { this[6] = "0".repeat(64) }.joinToString("*"),
+            p.toMutableList().apply { this[2] = "0".repeat(32) }.joinToString("*"),
+            p.toMutableList().apply { this[3] = "aabb" }.joinToString("*"),
+            p.toMutableList().apply { this[5] = "" }.joinToString("*"),
+            p.toMutableList().apply { this[7] = p[7].take(60) }.joinToString("*"),
+            p.take(8).joinToString("*"),
+        )
+        for (line in cases) {
+            assertEquals(line, CrackCore.parse(line) != null, CrackCore.inspect(line).crackable)
+        }
+    }
+
     /**
      * A line in the layout this app wrote before version 1.4.17: the supplicant nonce
      * at 49..81 and the Key IV/RSC/ID region (17..49) empty. Those lines are already on

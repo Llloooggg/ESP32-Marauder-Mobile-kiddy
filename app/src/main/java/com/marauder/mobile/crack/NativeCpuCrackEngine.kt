@@ -103,7 +103,7 @@ class NativeCpuCrackEngine(
         var nativeFailed: String? = null
 
         outer@ for (list in lists) {
-            Wordlist.reader(list).use { reader ->
+            WordlistReader.reader(list).use { reader ->
                 var batch = ArrayList<String>(NATIVE_BATCH)
                 while (true) {
                     val word = reader.readLine()
@@ -168,7 +168,7 @@ class NativeCpuCrackEngine(
         stopRequested.set(true)
     }
 
-    private fun countWords(file: File): Long = runCatching { Wordlist.count(file) }.getOrDefault(0L)
+    private fun countWords(file: File): Long = runCatching { WordlistReader.count(file) }.getOrDefault(0L)
 
     private companion object {
         /**

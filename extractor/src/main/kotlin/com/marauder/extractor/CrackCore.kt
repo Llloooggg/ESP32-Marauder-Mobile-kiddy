@@ -180,6 +180,8 @@ object CrackCore {
                     val spa = unhex(p[4], 6) ?: return null
                     val essid = unhexLenient(p[5]) ?: return null
                     if (essid.isEmpty()) return null
+                    // A field of zeros is not a checksum: no candidate can ever match it.
+                    if (pmkid.all { it == 0.toByte() }) return null
                     val pmkidData = "PMK Name".toByteArray(Charsets.ISO_8859_1) + aa + spa
                     WpaTarget(HashKind.PMKID, essid, 0, essid, pmkidData, null, null, pmkid)
                 }
@@ -193,6 +195,11 @@ object CrackCore {
                     val anonce = unhex(p[6], 32) ?: return null
                     val eapol = unhexAny(p[7]) ?: return null
                     if (eapol.size < 99) return null // auth_packet minimum
+                    // Zero key material is not key material: an all-zero ANonce (the AP's
+                    // message was never captured) or MIC cannot be verified by any password,
+                    // so such a line is refused here rather than tried forever.
+                    if (anonce.all { it == 0.toByte() }) return null
+                    if (mic.all { it == 0.toByte() }) return null
                     val keyver = be16(eapol, 5) and 0x0003
                     if (keyver !in 1..3) return null // module rejects keyver 0 / >3
                     val snonceAt = snonceCandidates(eapol)
@@ -374,6 +381,20 @@ object CrackCore {
                 )
             }
             "02" -> {
+                if (p.size < 9) {
+                    return HashInspection(
+                        line = line, kind = HashKind.HANDSHAKE, essidText = essidText, essidHex = essidHex,
+                        ap = ap, sta = sta, keyver = 0, messagePair = -1, anonceHex = "", micHex = "",
+                        eapolBytes = 0,
+                        problems = listOf(
+                            "line has ${p.size} fields; a handshake needs 9 " +
+                                "(WPA*02*MIC*AP*CLIENT*SSID*ANONCE*EAPOL*MP)"
+                        ),
+                        notes = emptyList(),
+                    )
+                }
+                if (unhex(p[3], 6) == null) problems += "AP address is not 6 bytes of hex"
+                if (unhex(p[4], 6) == null) problems += "client address is not 6 bytes of hex"
                 val mic = unhexAny(p[2]) ?: ByteArray(0)
                 val anonce = unhexAny(p[6]) ?: ByteArray(0)
                 val eapol = unhexAny(p[7]) ?: ByteArray(0)
@@ -393,8 +414,8 @@ object CrackCore {
                     if (keyver !in 1..3) problems += "EAPOL key version is $keyver — that is not a WPA/WPA2 key frame"
                     if (keyInfo and 0x0100 == 0)
                         problems += "the stored frame has no MIC flag in its key-info bits — the extractor stored the wrong message (an M1/M4 cannot carry a MIC)"
-                    if (keyInfo and 0x0080 != 0)
-                        notes += "stored frame is an M3 (ACK + MIC): paired as M3+M2 because the M1 was missing"
+                    if (keyInfo and 0x0080 != 0 && keyInfo and 0x0040 != 0)
+                        notes += "stored frame is an M3 (ACK + INSTALL + MIC): paired as M3+M2 because the M1 was missing"
                     if (keyInfo and 0x0007 == 1) notes += "key version 1 (legacy WPA/TKIP MIC)"
                     if (keyInfo and 0x0007 == 3) notes += "key version 3 (PSK-SHA256 / FT): SHA256-based MIC"
                 }
@@ -459,8 +480,11 @@ data class HashInspection(
     val problems: List<String>,
     val notes: List<String>,
 ) {
-    /** True when a cracker can do something with this line. */
-    val crackable: Boolean get() = kind != null && problems.isEmpty()
+    /**
+     * True when a cracker can do something with this line. Defined by the parser the
+     * engines actually use, so the screen can never offer a hash they would skip.
+     */
+    val crackable: Boolean get() = kind != null && problems.isEmpty() && CrackCore.parse(line) != null
 
     /** Short label for lists. */
     val label: String get() = when (kind) {

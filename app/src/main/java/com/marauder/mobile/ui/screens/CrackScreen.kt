@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.marauder.mobile.crack.Backend
+import com.marauder.mobile.crack.CrackOutcome
 import com.marauder.mobile.crack.Eta
 import com.marauder.mobile.crack.MeasuredRate
 import com.marauder.mobile.data.KeyManagement
@@ -192,7 +193,7 @@ fun CrackScreen(
                         }
                     }
                 }
-                if (state.inspections.none { it.crackable }) {
+                if (state.testable == 0) {
                     item {
                         Text(
                             "None of these records can be recovered from this capture — re-extract it (Extract hashes) " +
@@ -343,7 +344,7 @@ fun CrackScreen(
                             }
                             if (state.exhausted && state.found.isEmpty()) {
                                 Text(
-                                    "The wordlists were tried to the end without recovering this password. A bigger list, rules, or a weaker candidate is the usual next step.",
+                                    CrackOutcome.exhausted(state.testable, state.hashLines.size),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = Warning,
                                 )
