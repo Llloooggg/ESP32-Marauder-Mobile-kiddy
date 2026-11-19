@@ -50,7 +50,6 @@ object FirmwareCommands {
             " [-n] <native/all/gps/glonass/galileo/navic/qzss/beidou>"),
         FirmwareVerb(GPS_DATA, "gpsdata"),
         FirmwareVerb(GPS_POI, "gpspoi -s/-m/-e"),
-        FirmwareVerb(GPS_TRACKER, "gpstracker -c <start/stop>"),
         FirmwareVerb(HELP, "help"),
         FirmwareVerb(INFO, "info [-a <index>]"),
         FirmwareVerb(JOIN, "join -a <index> -p <password>/-s"),
@@ -110,8 +109,26 @@ object FirmwareCommands {
     /** Every verb name the board accepts. */
     val verbs: Set<String> = (cli + json).map { it.name }.toSet()
 
-    /** Verbs the firmware has commented out: sending one is a silent no-op, so never build them. */
-    val neverSend: Set<String> = setOf("scansta", "btwardrive", "btspamall", "sourapple", "swiftpair")
+    /**
+     * Verbs the firmware never answers, so sending one is a silent no-op and nothing may build them:
+     * either the verb constant is commented out in `CommandLine.h` (`scansta`, `btwardrive`, …), or the
+     * word is printed by the firmware's own `help` but has no branch in its parser — `gpstracker` is
+     * that second kind (`CommandLine.h:76` declares it, `CommandLine.cpp` never compares against it,
+     * and the board's tracker is started by `gps -t`). The app's own phone-GPS tracker keeps the name
+     * for itself; see [appOnly].
+     */
+    val neverSend: Set<String> = setOf("scansta", "btwardrive", "btspamall", "sourapple", "swiftpair", GPS_TRACKER)
+
+    /**
+     * Words the app answers by itself and never puts on the wire. They look like firmware commands
+     * because they came from the same menus, so they need naming here: a menu item that "sends" one of
+     * these is doing the work on the phone, and the app has to say so rather than let the word imply
+     * the board did it.
+     */
+    val appOnly: Map<String, String> = linkedMapOf(
+        GPS_TRACKER to "the phone's own GPS writes the GPX track; the board has no `gpstracker` " +
+            "dispatch, and its own tracker is `gps -t`",
+    )
 
     // --- verb prefixes -----------------------------------------------------------------
     // One constant per verb, so a builder and an argument-prompted catalog entry can
@@ -137,6 +154,9 @@ object FirmwareCommands {
     const val GPS = "gps"
     const val GPS_DATA = "gpsdata"
     const val GPS_POI = "gpspoi"
+
+    /** Not in the [cli] census: the firmware's help prints it, its parser never answers it. The app
+     *  uses the word for its own phone-GPS tracker — see [appOnly] and [neverSend]. */
     const val GPS_TRACKER = "gpstracker"
     const val HELP = "help"
     const val INFO = "info"
@@ -227,6 +247,17 @@ object FirmwareCommands {
     fun loadList(kind: String): String = "$LOAD -$kind"
 
     /**
+     * The board's own transmitted MACs. These change what the *board* puts on the air; they do not
+     * touch what it captures, and a restart puts the firmware's default back.
+     * `cloneapmac -a <index>` / `clonestamac -s <index>` copy a MAC out of the firmware's own AP /
+     * station lists, so the index is a row of `list -a` / `list -c`.
+     */
+    fun randomiseApMac(): String = RAND_AP_MAC
+    fun randomiseStationMac(): String = RAND_STA_MAC
+    fun cloneApMac(slot: Int): String = "$CLONE_AP_MAC -a $slot"
+    fun cloneStationMac(slot: Int): String = "$CLONE_STA_MAC -s $slot"
+
+    /**
      * `add -a -b <mac> [-ch <n>] [-e <ssid>]` inserts an AP into the firmware's list.
      * null when the SSID cannot be quoted safely for the firmware's parser.
      */
@@ -309,6 +340,9 @@ object FirmwareCommands {
     fun channelSet(channel: Int): String = "$CHANNEL -s $channel"
 
     fun brightnessCycle(): String = "$BRIGHTNESS -c"
+    /** `brightness` with no flags prints the board's own level — the read-only form, and the only
+     *  one worth offering before anything is written. */
+    fun brightnessCurrent(): String = BRIGHTNESS
     fun brightnessLevel(level: Int): String = "$BRIGHTNESS -s $level"
     fun ledColor(hex: String): String = "$LED -s $hex"
     fun ledPattern(name: String): String = "$LED -p $name"
@@ -364,9 +398,23 @@ object FirmwareCommands {
             if (listOnly) append(" -l")
         }
 
+    /**
+     * `gpspoi -s|-m|-e`: begin a point-of-interest log, mark the position it is at now, write the log
+     * out. The board's own three-step form; there is no separate "stop" for it.
+     */
+    fun gpsPoi(what: String): String = "$GPS_POI -$what"
+
     /** `gps [-g <what>]` / `gps -n <system>` — needs a board with a GPS module (`gps` cap). */
     fun gpsGet(what: String): String = "$GPS -g $what"
     fun gpsSetSystems(system: String): String = "$GPS -n $system"
+
+    /**
+     * `gps -t` — the board's own GPS tracker, which is what the firmware's `gpstracker` help line
+     * describes but never starts: the tracker mode begins here and ends with `stopscan`, like the
+     * other GPS modes the firmware starts as a scan (`gpsdata` even says so out loud). This is a
+     * different thing from the app's phone-GPS track file, which never touches the wire.
+     */
+    fun gpsTracker(): String = "$GPS -t"
 
     /**
      * Quote one argument for the firmware's parser, or null when it cannot be quoted.
@@ -392,6 +440,8 @@ object FirmwareCommands {
         SPOOF_AT to spoofAirTag(0),
         FINDMY to findMyBeacon(0),
         FOXHUNT to foxhuntAp(0),
+        CLONE_AP_MAC to cloneApMac(0),
+        CLONE_STA_MAC to cloneStationMac(0),
         INFO to apInfo(0),
         GEOFENCE to geofenceClear(1),
         CSI_MOTION to csimotionStart(0),

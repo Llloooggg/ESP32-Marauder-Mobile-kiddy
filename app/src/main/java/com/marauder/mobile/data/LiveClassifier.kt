@@ -50,6 +50,10 @@ object LiveClassifier {
             "remoteid" -> c.contains("scan") || c.contains("track")
             "recon" -> !c.contains("stop") && !c.contains("status")
             "csimotion" -> c.contains("start")
+            // `gps -g …`/`gps -n …` print one answer. `gps -t` starts the board's tracker as a scan,
+            // so it needs Stop and it needs stopping on leaving the screen - the firmware's own
+            // GPS modes say so out loud ("Stop with stopscan").
+            "gps" -> c.contains("-t")
             else -> head in continuousHeads
         }
         return LiveSpec(list = list, continuous = continuous, capture = capture)

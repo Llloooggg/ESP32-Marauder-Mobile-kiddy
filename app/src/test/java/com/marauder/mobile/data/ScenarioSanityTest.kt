@@ -121,6 +121,37 @@ class ScenarioSanityTest {
         assertEquals("one-sided band warnings: $halfTruth", emptyList<String>(), halfTruth)
     }
 
+    /**
+     * A verb only counts as covered if a playbook says why it is not in one.
+     *
+     * The catalog already reaches every verb, but a catalog entry is a button, not a job: the verbs
+     * that take a list index or a mode are exactly the ones a person cannot use without knowing what
+     * the number means. So each of them must either appear as a step of some playbook (with the
+     * screen that shows the list its indices come from next to it), or be listed here with the
+     * reason it is left out — a reason the reader can disagree with, unlike a gap nobody notices.
+     *
+     * Only the CLI verbs are checked. The JSON verbs are the app's own protocol: `jsonlist` and
+     * `jsonmode` run on every connection, so putting them in a playbook would describe plumbing,
+     * not a job the user asked for.
+     */
+    @Test
+    fun everyVerbIsSpelledOutInAPlaybookOrSaysWhyItIsNot() {
+        val shown = Scenarios.all.flatMap { s ->
+            s.steps.mapNotNull { it.command } + listOfNotNull(s.command.ifBlank { null }) + s.pre
+        }.map { it.trim().substringBefore(' ') }.toSet()
+
+        val missing = (FirmwareCommands.cli.map { it.name } - shown - PLAYBOOK_LESS.keys).sorted()
+        assertEquals("verbs no playbook mentions and none explains: $missing", emptyList<String>(), missing)
+
+        val stale = PLAYBOOK_LESS.keys.filter { it !in FirmwareCommands.verbs }.sorted()
+        assertEquals("reasons given for verbs that are not in the census: $stale", emptyList<String>(), stale)
+    }
+
+    companion object {
+        /** Verb -> why no playbook spells it out. Every CLI verb not named in a step belongs here. */
+        private val PLAYBOOK_LESS: Map<String, String> = emptyMap()
+    }
+
     @Test
     fun instantiateFillsTheLiveSlotAndChannelOnly() {
         val cmd = Scenarios.instantiate("sniffpmkid -c {ch} -d -l", slot = 4, channel = 11)
@@ -134,7 +165,11 @@ class ScenarioSanityTest {
 
     @Test
     fun capsFilteringHidesOnlyWhatTheBoardCannotDo() {
-        val full = Scenarios.forCaps(listOf("wifi", "capstream", "bt", "foxhunt", "recon", "csi", "remoteid"))
+        val capable = listOf(
+            "wifi", "capstream", "bt", "gps", "sd", "screen",
+            "remoteid", "foxhunt", "recon", "csi", "proto3",
+        )
+        val full = Scenarios.forCaps(capable)
         assertEquals("a capable board sees every playbook", Scenarios.all.size, full.size)
         val plain = Scenarios.forCaps(listOf("wifi"))
         assertTrue(

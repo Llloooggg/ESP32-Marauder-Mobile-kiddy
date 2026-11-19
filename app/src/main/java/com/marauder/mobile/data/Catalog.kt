@@ -369,10 +369,14 @@ object Catalog {
             MenuScreen(
                 "wifi_macs", "Set MACs",
                 listOf(
-                    MenuItem("Generate AP MAC", "randapmac", Icons.Filled.Shuffle, Accent.GENERAL, MenuAction.Send("randapmac")),
-                    MenuItem("Generate STA MAC", "randstamac", Icons.Filled.Shuffle, Accent.GENERAL, MenuAction.Send("randstamac")),
-                    MenuItem("Clone AP MAC #0", "cloneapmac -a 0", Icons.Filled.ContentCopy, Accent.GENERAL, MenuAction.Send("cloneapmac -a 0")),
-                    MenuItem("Clone STA MAC #0", "clonestamac -s 0", Icons.Filled.ContentCopy, Accent.GENERAL, MenuAction.Send("clonestamac -s 0")),
+                    MenuItem("Generate AP MAC", "randapmac", Icons.Filled.Shuffle, Accent.GENERAL,
+                        MenuAction.Send(FirmwareCommands.randomiseApMac())),
+                    MenuItem("Generate STA MAC", "randstamac", Icons.Filled.Shuffle, Accent.GENERAL,
+                        MenuAction.Send(FirmwareCommands.randomiseStationMac())),
+                    MenuItem("Clone AP MAC #0", "cloneapmac -a 0", Icons.Filled.ContentCopy, Accent.GENERAL,
+                        MenuAction.Arg("${FirmwareCommands.CLONE_AP_MAC} -a", "index from the Access Points list", "0")),
+                    MenuItem("Clone STA MAC #0", "clonestamac -s 0", Icons.Filled.ContentCopy, Accent.GENERAL,
+                        MenuAction.Arg("${FirmwareCommands.CLONE_STA_MAC} -s", "index from the Stations list", "0")),
                 ),
             ),
         )
@@ -537,10 +541,18 @@ object Catalog {
                 "gps", "GPS",
                 listOf(
                     MenuItem("Wardrive", "WiFi + GPS → CSV on phone", Icons.Filled.Radar, Accent.GPS, MenuAction.Send("wardrive")),
-                    MenuItem("GPS Data", "gpsdata", Icons.Filled.MyLocation, Accent.GPS, MenuAction.Send("gpsdata")),
-                    MenuItem("NMEA Stream", "nmea", Icons.Filled.Satellite, Accent.GPS, MenuAction.Send("nmea")),
-                    MenuItem("GPS Tracker", "gpstracker -c start", Icons.Filled.Route, Accent.GPS, MenuAction.Send("gpstracker -c start")),
-                    MenuItem("Stop Tracker", "gpstracker -c stop", Icons.Filled.Stop, Accent.GPS, MenuAction.Send("gpstracker -c stop")),
+                    MenuItem("GPS Data", "gpsdata", Icons.Filled.MyLocation, Accent.GPS, MenuAction.Send("gpsdata"),
+                        requiresCaps = setOf("gps")),
+                    MenuItem("NMEA Stream", "nmea", Icons.Filled.Satellite, Accent.GPS, MenuAction.Send("nmea"),
+                        requiresCaps = setOf("gps")),
+                    // The app's own track file, from the phone's GPS. The word looks like a firmware
+                    // command because it came from the same menus; the label says whose GPS it is.
+                    MenuItem("Phone Track", "the phone's GPS → GPX", Icons.Filled.Route, Accent.GPS,
+                        MenuAction.Send("gpstracker -c start")),
+                    MenuItem("Stop Phone Track", "the phone's GPS → GPX", Icons.Filled.Stop, Accent.GPS,
+                        MenuAction.Send("gpstracker -c stop")),
+                    MenuItem("Board GPS Tracker", "gps -t (stop with Stop)", Icons.Filled.Route, Accent.GPS,
+                        MenuAction.Send(FirmwareCommands.gpsTracker()), requiresCaps = setOf("gps")),
                     MenuItem("GPS POI", "Mark points of interest", Icons.Filled.PushPin, Accent.GPS, MenuAction.Submenu("gps_poi")),
                     MenuItem("Tag POI While Wardriving", "wardrivepoi [label]", Icons.Filled.PushPin, Accent.GPS,
                         MenuAction.Arg(FirmwareCommands.WARDRIVE_POI, "optional label for the point", "campus")),

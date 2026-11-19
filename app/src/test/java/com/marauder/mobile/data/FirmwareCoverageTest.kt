@@ -39,13 +39,14 @@ class FirmwareCoverageTest {
     /**
      * The census count is pinned on purpose: when the firmware adds or drops a verb, this
      * fails and the app has to look at the new command instead of quietly ignoring it.
-     * 63 CLI verbs + the 5 answered by the JSON layer.
+     * 62 CLI verbs + the 5 answered by the JSON layer. (`gpstracker` is not one of them: the
+     * firmware prints it in `help` and never parses it, and the app answers that word itself.)
      */
     @Test
     fun theCensusCoversTheWholeDispatchChain() {
-        assertEquals("CLI verb census", 63, FirmwareCommands.cli.size)
+        assertEquals("CLI verb census", 62, FirmwareCommands.cli.size)
         assertEquals("JSON verb census", 5, FirmwareCommands.json.size)
-        assertEquals("total verbs", 68, FirmwareCommands.verbs.size)
+        assertEquals("total verbs", 67, FirmwareCommands.verbs.size)
         assertTrue(
             "every verb needs the firmware's own syntax note",
             (FirmwareCommands.cli + FirmwareCommands.json).all { it.syntax.isNotBlank() && it.syntax.startsWith(it.name) },
@@ -77,6 +78,26 @@ class FirmwareCoverageTest {
             "verbs the firmware has commented out must stay out of the census: ${FirmwareCommands.neverSend}",
             FirmwareCommands.neverSend.none { it in FirmwareCommands.verbs },
         )
+    }
+
+    /**
+     * The app answers some words itself, and they look exactly like firmware commands. Two things
+     * have to be true for that to stay honest: the word is not counted as a firmware verb (or the app
+     * would be claiming the board does it), and the note says what the app does instead — including,
+     * for `gpstracker`, the firmware line that actually starts the board's own tracker.
+     */
+    @Test
+    fun appAnsweredWordsAreNotPassedOffAsFirmwareVerbs() {
+        val claimed = FirmwareCommands.appOnly.keys.filter { it in FirmwareCommands.verbs }
+        assertEquals("app-answered words listed as firmware verbs: $claimed", emptyList<String>(), claimed)
+
+        val undocumented = FirmwareCommands.appOnly.filter { (_, whatItDoes) -> whatItDoes.isBlank() }
+        assertEquals("app-answered words with no note about what the app does: $undocumented",
+            emptyMap<String, String>(), undocumented)
+
+        // The one that started it: `gpstracker` is in the firmware's help text but not in its parser.
+        assertTrue("gpstracker must never be sent to a board", "gpstracker" in FirmwareCommands.neverSend)
+        assertEquals("gps -t", FirmwareCommands.gpsTracker())
     }
 
     // --- argument quoting, the one place a command can be silently mangled -------------
@@ -137,5 +158,11 @@ class FirmwareCoverageTest {
         assertEquals("spoofat -t 1", FirmwareCommands.spoofAirTag(1))
         assertEquals("findmy -t 1", FirmwareCommands.findMyBeacon(1))
         assertEquals("list -b", FirmwareCommands.listDump("b"))
+        // The same rule for the board's own MACs: `cloneapmac -a` / `clonestamac -s` copy from the
+        // AP / station lists, so their index is a row of `list -a` / `list -c`, never a remembered number.
+        assertEquals("cloneapmac -a 2", FirmwareCommands.cloneApMac(2))
+        assertEquals("clonestamac -s 4", FirmwareCommands.cloneStationMac(4))
+        assertEquals("randapmac", FirmwareCommands.randomiseApMac())
+        assertEquals("randstamac", FirmwareCommands.randomiseStationMac())
     }
 }

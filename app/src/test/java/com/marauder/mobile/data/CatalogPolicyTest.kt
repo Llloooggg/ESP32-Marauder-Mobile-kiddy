@@ -26,21 +26,35 @@ class CatalogPolicyTest {
     }
 
     @Test
-    fun everySendCommandUsesAFirmwareVerb() {
+    fun everySendCommandUsesAFirmwareVerbOrSaysItIsTheAppsOwn() {
         val unknown = allItems.mapNotNull { headOf(it) }
-            .filter { it !in firmwareVerbs }
+            .filter { it !in firmwareVerbs && it !in FirmwareCommands.appOnly.keys }
             .distinct()
         assertEquals("commands not present in the firmware: $unknown", emptyList<String>(), unknown)
+
+        // A word the board never sees may only be offered where the menu says whose device answers it.
+        // "GPS Tracker" next to a command the board ignores reads like a board feature with a broken
+        // board; the app's own tracker has to name the phone.
+        val unclear = allItems
+            .filter { headOf(it) in FirmwareCommands.appOnly.keys }
+            .filter { item -> !"${item.title} ${item.subtitle.orEmpty()}".contains("phone", ignoreCase = true) }
+            .map { it.title }
+        assertEquals("app-answered commands that do not say so: $unclear", emptyList<String>(), unclear)
     }
 
     /**
      * The firmware has these verbs commented out, so its CLI never dispatches them. If any
      * command the app can build used one, the user would get a silent no-op instead of a
      * result — and this test would say so.
+     *
+     * `gpstracker` belongs here too: the firmware's own `help` prints it, but no branch of its
+     * parser compares against it, so the board would ignore it. The app answers that word itself
+     * (phone GPS → GPX), which is why the entries that use it are checked above instead.
      */
     @Test
     fun verbsTheFirmwareHasCommentedOutAreNeverSent() {
-        val built = allItems.mapNotNull { (it.action as? MenuAction.Send)?.command } +
+        val built = allItems.mapNotNull { (it.action as? MenuAction.Send)?.command }
+            .filterNot { cmd -> cmd.trim().substringBefore(' ') in FirmwareCommands.appOnly.keys } +
             FirmwareCommands.dynamic.values +
             listOf(
                 FirmwareCommands.analyzer("wifi"),

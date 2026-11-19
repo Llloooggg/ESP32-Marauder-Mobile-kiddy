@@ -6,14 +6,22 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.DeveloperBoard
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Numbers
 import androidx.compose.material.icons.filled.Podcasts
 import androidx.compose.material.icons.filled.Radar
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SettingsInputAntenna
+import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.TrackChanges
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.ui.graphics.vector.ImageVector
 
@@ -148,8 +156,18 @@ object Scenarios {
             steps = listOf(
                 ScenarioStep("Start the board's scan and the phone's location", FirmwareCommands.WARDRIVE),
                 ScenarioStep("Tag a point of interest on the way", FirmwareCommands.WARDRIVE_POI),
+                ScenarioStep(
+                    "Let the board send its own log, if it was built to: it joins a saved WiFi first",
+                    FirmwareCommands.uploadTo("wigle"),
+                ),
             ),
             outcome = "A CSV (and a GPX for the route) in the Library, shareable from the report export.",
+            warn = "The CSV on the phone is made from what the board streams, so the route is only as " +
+                "complete as the channels the board was hearing — its radio is 2.4 GHz only, and a " +
+                "5 GHz network (a channel above 14) never appears in it. `upload` is the other way " +
+                "round: the board reads the log it wrote itself, joins a saved WiFi network, and needs " +
+                "a firmware built with direct upload — the app cannot prove that from the board's " +
+                "capability list, so it sends the command and reports what the board says.",
             run = ScenarioRun.MISSION,
             command = FirmwareCommands.WARDRIVE,
             mode = ScenarioMode.WARDRIVE,
@@ -306,9 +324,16 @@ object Scenarios {
                 ScenarioStep("Read the board's settings", FirmwareCommands.settingsDump()),
                 ScenarioStep("ChanHop off / on: whether a pinned scan stays on its channel", FirmwareCommands.settingsSet("ChanHop", false)),
                 ScenarioStep("SavePCAP, ForcePMKID, ForceProbe, EPDeauth: what a run collects", FirmwareCommands.settingsSet("SavePCAP", true)),
+                ScenarioStep("What the board's own display is set to, where it has a display", FirmwareCommands.brightnessCurrent()),
+                ScenarioStep("A colour on the RGB LED strip, where the board has one", FirmwareCommands.ledColor("#ff8800")),
+                ScenarioStep("Rainbow: the board looks awake while it runs", FirmwareCommands.ledPattern("rainbow")),
             ),
             outcome = "A list of the board's real settings with switches that verify themselves: each write " +
                 "is followed by a fresh read, and a change the board did not apply is reported as failed.",
+            warn = "Two of these answer nothing on some boards, and that is a build fact rather than a " +
+                "broken command: the firmware compiles the brightness branch only for boards with a " +
+                "display of its own, and the LED branch only for boards with an RGB LED strip. The " +
+                "settings dump is the one that always answers, and it is where to start.",
             run = ScenarioRun.NAVIGATE,
             navigate = MenuAction.OpenBoardSettings,
             icon = Icons.Filled.Settings,
@@ -346,6 +371,7 @@ object Scenarios {
             steps = listOf(
                 ScenarioStep("Ask the board what it is", FirmwareCommands.JSON_INFO),
                 ScenarioStep("Ask it what it supports", FirmwareCommands.PROTOCOL_INFO),
+                ScenarioStep("Ask it for its own command list, in its own words", FirmwareCommands.helpText()),
                 ScenarioStep("Raise the serial rate for capture streaming", FirmwareCommands.JSON_BAUD),
                 ScenarioStep("Reboot if the firmware got stuck", FirmwareCommands.REBOOT),
             ),
@@ -355,6 +381,281 @@ object Scenarios {
             navigate = MenuAction.Submenu("device"),
             icon = Icons.Filled.DeveloperBoard,
             accent = Accent.DEVICE,
+        ),
+
+        // ----------------------------------------------------------------------------------
+        // The rest of the firmware's surface, as jobs. These exist because the commands below take
+        // an index or a mode: a bare button for `csimotion start` or `remoteid track` is a button
+        // that does nothing until the user knows which row of which list the number means. A
+        // playbook is what puts that list in front of them.
+        // ----------------------------------------------------------------------------------
+
+        Scenario(
+            id = "silent-watchers",
+            title = "Watch what is already on the air",
+            goal = "Ask nothing and transmit nothing: run the firmware's own detectors one at a time " +
+                "and read what the air carries by itself.",
+            steps = listOf(
+                ScenarioStep("Is there any traffic at all? Frames counted per channel", FirmwareCommands.PACKET_COUNT),
+                ScenarioStep("Beacons only - the access points, without the rest", FirmwareCommands.SNIFF_BEACON),
+                ScenarioStep("Deauth frames - who is being disconnected, and by whom", FirmwareCommands.SNIFF_DEAUTH),
+                ScenarioStep("WPA3 commit frames - what a WPA3 network sends before a handshake", FirmwareCommands.SNIFF_SAE),
+                ScenarioStep("Pineapple-style probe answers", FirmwareCommands.SNIFF_PINESCAN),
+                ScenarioStep("Several SSIDs from one access point", FirmwareCommands.SNIFF_MULTISSID),
+                ScenarioStep("Pwnagotchi packets", FirmwareCommands.SNIFF_PWN),
+                ScenarioStep("Every management frame, raw", FirmwareCommands.SNIFF_RAW),
+                ScenarioStep("Channel occupancy while the board hops", FirmwareCommands.analyzer("chan")),
+                ScenarioStep("End it, and the counters end", FirmwareCommands.stopscan()),
+            ),
+            outcome = "What the board noticed, in the console and in the session journal. Whether a " +
+                "capture file also appears depends on the mode, and the app does not guess: the " +
+                "Library lists the files that exist after the run. This is the honest first run " +
+                "before choosing a target, because it cannot disturb anything.",
+            warn = "The detectors hear exactly what the radio can reach, and this board's radio is " +
+                "2.4 GHz only: anything on a channel above 14 is a 5 GHz interface and no detector " +
+                "here will report it, however long it runs.",
+            run = ScenarioRun.MISSION,
+            command = FirmwareCommands.PACKET_COUNT,
+            mode = ScenarioMode.SCAN,
+            icon = Icons.Filled.Sensors,
+            accent = Accent.SNIFFER,
+        ),
+
+        Scenario(
+            id = "hidden-network",
+            title = "Work with a network the scan does not show",
+            goal = "A hidden SSID, or an access point you already know the address of: put it in the " +
+                "board's own list by hand, and read back the slot it landed in before using it.",
+            steps = listOf(
+                ScenarioStep(
+                    "Insert it by hand: address, channel, and its name if it has one",
+                    requireNotNull(FirmwareCommands.addAp("AA:BB:CC:DD:EE:FF", 6, "lab ap")),
+                ),
+                ScenarioStep("Read the list back - the slot the board gave it is what every later command takes", FirmwareCommands.listDump("a")),
+                ScenarioStep("What the board believes about that row", FirmwareCommands.apInfo(0)),
+                ScenarioStep("A client that is not in the list either", "${FirmwareCommands.ADD} -c -b AA:BB:CC:DD:EE:02"),
+                ScenarioStep("Then the capture, against the channel you wrote", "${FirmwareCommands.SNIFF_PMKID} -c 6 -d -l"),
+            ),
+            outcome = "A row in the board's own list, with its slot and channel, which the capture " +
+                "playbooks can then be run against. The app re-reads the list before it uses a slot: " +
+                "a number remembered from before the insert addresses a different network.",
+            warn = "The channel you write is the channel the board will hold. If it is wrong the run is " +
+                "silent even though every command worked - and a channel above 14 is a 5 GHz interface " +
+                "this 2.4 GHz board cannot hear at all.",
+            run = ScenarioRun.NAVIGATE,
+            navigate = MenuAction.Submenu("wifi_lists"),
+            icon = Icons.Filled.Router,
+            accent = Accent.SCANNER,
+        ),
+
+        Scenario(
+            id = "follow-devices",
+            title = "Which devices move with you",
+            goal = "Walk with the board. It keeps a signal history per address, and the addresses " +
+                "whose signal grows as you come closer and fades as you leave are the ones beside you.",
+            steps = listOf(
+                ScenarioStep("Start the run the firmware itself calls MAC Tracker", FirmwareCommands.MAC_TRACK),
+                ScenarioStep("Walk - it is judging a trend over readings, not one reading", FirmwareCommands.stopscan()),
+                ScenarioStep("Then the same question for one transmitter, with a live signal readout", FirmwareCommands.foxhuntAp(0)),
+            ),
+            outcome = "The board marks the addresses whose signal moved with yours, and writes those " +
+                "frames into its capture buffer. It is a coarse answer to a physical question: which " +
+                "of these is near me - and unlike a fox hunt it answers it for everything at once.",
+            warn = "It needs readings of the same address over time, so standing still proves nothing. " +
+                "It also only ever sees this 2.4 GHz radio: a device that talks to a 5 GHz interface " +
+                "(a channel above 14) is not in this list, no matter how close it is.",
+            run = ScenarioRun.MISSION,
+            command = FirmwareCommands.MAC_TRACK,
+            mode = ScenarioMode.SCAN,
+            icon = Icons.Filled.Visibility,
+            accent = Accent.SNIFFER,
+        ),
+
+        Scenario(
+            id = "mac-identity",
+            title = "Change the address the board transmits with",
+            goal = "Some tests, and some access points, care about the MAC the board puts in frames it " +
+                "sends itself. This is where those addresses come from.",
+            steps = listOf(
+                ScenarioStep("A new random address for the board's access-point frames", FirmwareCommands.randomiseApMac()),
+                ScenarioStep("A new random address for its station frames", FirmwareCommands.randomiseStationMac()),
+                ScenarioStep("Copy the address of a row of the access-point list", FirmwareCommands.cloneApMac(0)),
+                ScenarioStep("Copy the address of a row of the station list", FirmwareCommands.cloneStationMac(0)),
+                ScenarioStep("Those two lists, with their slots", FirmwareCommands.listDump("a")),
+            ),
+            outcome = "The board's own frames go out with a different address: a portal it opens, a " +
+                "network it joins, a deauth it sends. Nothing that was already captured changes, and " +
+                "a reboot puts the firmware's default back.",
+            warn = "The index is a row of the list the board is holding now, not a number from an " +
+                "earlier scan: after a rescan the same slot addresses a different device.",
+            run = ScenarioRun.NAVIGATE,
+            navigate = MenuAction.Submenu("wifi_macs"),
+            icon = Icons.Filled.Shuffle,
+            accent = Accent.GENERAL,
+        ),
+
+        Scenario(
+            id = "bluetooth-devices",
+            title = "AirTags, beacons and Flipper badges",
+            goal = "Look at the Bluetooth advertisements around you, then answer as one of them.",
+            steps = listOf(
+                ScenarioStep("Every advertisement the board can classify", FirmwareCommands.sniffBt()),
+                ScenarioStep("One kind at a time", FirmwareCommands.sniffBt("airtag")),
+                ScenarioStep("Credit-card skimmers, which advertise loudly and quietly everywhere else", FirmwareCommands.SNIFF_SKIM),
+                ScenarioStep("The board's own list of what it saw - its rows are the indices below", FirmwareCommands.listDump("b")),
+                ScenarioStep("Answer as that AirTag", FirmwareCommands.spoofAirTag(0)),
+                ScenarioStep("Make a FindMy beacon", FirmwareCommands.findMyBeacon(0)),
+            ),
+            outcome = "A list of Bluetooth devices with their slots, and one of them answered in the " +
+                "board's own name. The slots come from the list built during this run, which is why " +
+                "the list is opened before any index is used.",
+            warn = "Bluetooth is a second radio, not the WiFi one: this is advertising traffic, and a " +
+                "device that is connected but not broadcasting does not appear at all. The index is a " +
+                "row of the list the board built in this run, and the list is cleared by a restart.",
+            run = ScenarioRun.MISSION,
+            command = FirmwareCommands.sniffBt(),
+            mode = ScenarioMode.SNIFF,
+            icon = Icons.Filled.Bluetooth,
+            accent = Accent.BLUETOOTH,
+            requiresCaps = setOf("bt"),
+        ),
+
+        Scenario(
+            id = "board-position",
+            title = "Let the board carry its own position",
+            goal = "A board with a GPS module can log where it was, which is what makes its own files " +
+                "stand on their own instead of depending on the phone.",
+            steps = listOf(
+                ScenarioStep("Does it have a fix at all - read this first", FirmwareCommands.gpsGet("fix")),
+                ScenarioStep("How many satellites, and how well", FirmwareCommands.gpsGet("sat")),
+                ScenarioStep("The position it currently believes", FirmwareCommands.gpsGet("lat")),
+                ScenarioStep("Start the board's own track", FirmwareCommands.gpsTracker()),
+                ScenarioStep("End the track, like any other scan", FirmwareCommands.stopscan()),
+                ScenarioStep("The position as the board reads it right now - the board says to stop it with stopscan", FirmwareCommands.GPS_DATA),
+                ScenarioStep("The raw sentences, one line at a time", FirmwareCommands.NMEA),
+                ScenarioStep("A point of interest: begin, mark it, write it out", FirmwareCommands.gpsPoi("m")),
+                ScenarioStep("Which satellite systems to listen to", FirmwareCommands.gpsSetSystems("all")),
+                ScenarioStep("The fences the board checks its position against", FirmwareCommands.geofenceList()),
+                ScenarioStep(
+                    "One fence: slot, latitude, longitude, radius in miles, name",
+                    requireNotNull(FirmwareCommands.geofenceSet(1, 55.7522, 37.6156, 0.25, "home")),
+                ),
+            ),
+            outcome = "Position that came from the board, so the files the board writes carry it with " +
+                "no phone involved. The app keeps the fix state visible while this runs, and writes no " +
+                "position it did not receive.",
+            warn = "A cold GPS answers nothing at all, and no command here can make a position appear: " +
+                "the fix line is the first thing to read. The menu entry called Phone Track is the " +
+                "phone's own GPS, not this one - the board's tracker is the command above.",
+            run = ScenarioRun.NAVIGATE,
+            navigate = MenuAction.Submenu("gps"),
+            icon = Icons.Filled.MyLocation,
+            accent = Accent.GPS,
+            requiresCaps = setOf("gps"),
+        ),
+
+        Scenario(
+            id = "drone-id",
+            title = "Drones that say who they are",
+            goal = "Drones that broadcast Remote ID announce their position and their operator. The " +
+                "board listens, keeps a list, and can follow one of them.",
+            steps = listOf(
+                ScenarioStep("Hear what is around", FirmwareCommands.remoteId("scan")),
+                ScenarioStep("The list the board built - its rows are the index `track` takes", FirmwareCommands.remoteId("list")),
+                ScenarioStep("Follow one of them instead of everything", FirmwareCommands.remoteId("track", 0)),
+                ScenarioStep("Start the list again", FirmwareCommands.remoteId("clear")),
+            ),
+            outcome = "A Remote ID list with the slots that `track` addresses, kept live in the app's " +
+                "Remote ID view. Tracking one keeps the board listening for that transmitter rather " +
+                "than sorting every broadcast it hears.",
+            warn = "This is broadcast, not a connection: a drone that is switched off, too far away, " +
+                "or announcing on a radio this board does not have is simply not in the list, and an " +
+                "empty list is not a failed command.",
+            run = ScenarioRun.MISSION,
+            command = FirmwareCommands.remoteId("scan"),
+            mode = ScenarioMode.SCAN,
+            icon = Icons.Filled.SmartToy,
+            accent = Accent.SCANNER,
+            requiresCaps = setOf("remoteid"),
+        ),
+
+        Scenario(
+            id = "csi-motion",
+            title = "Notice movement in one network's signal",
+            goal = "The S3 reads the channel state of the frames it receives. Against one steady " +
+                "transmitter that becomes a motion sensor: the room changes the signal, and the change " +
+                "is what is measured.",
+            steps = listOf(
+                ScenarioStep("Fill the access-point list first - the board says so itself: 'Run sniffbeacon, stopscan, then list -a.'", FirmwareCommands.SNIFF_BEACON),
+                ScenarioStep("Stop the scan so the list stays where it is", FirmwareCommands.stopscan()),
+                ScenarioStep("The rows, and the slots they have", FirmwareCommands.listDump("a")),
+                ScenarioStep("Start sensing against one of them", FirmwareCommands.csimotionStart(0)),
+                ScenarioStep("What it measured", FirmwareCommands.csimotionStatus()),
+                ScenarioStep("Teach it an empty room: keep still for 30 seconds", FirmwareCommands.csimotionRecalibrate()),
+            ),
+            outcome = "A per-target motion reading, with the board's own status output beside it. The " +
+                "reference transmitter matters more than the word 'sensor': this measures that a " +
+                "signal the board already trusts has changed.",
+            warn = "The index is a row of the list the board is holding now; with an empty list it " +
+                "answers 'Invalid AP index. Run sniffbeacon, stopscan, then list -a.' And the " +
+                "reference has to keep transmitting: without frames from that network there is no " +
+                "signal to notice a change in.",
+            run = ScenarioRun.MISSION,
+            command = "${FirmwareCommands.CSI_MOTION} start {ap}",
+            mode = ScenarioMode.OTHER,
+            target = ScenarioTarget.ACCESS_POINT,
+            icon = Icons.Filled.TrackChanges,
+            accent = Accent.SNIFFER,
+            requiresCaps = setOf("csi"),
+        ),
+
+        Scenario(
+            id = "board-files",
+            title = "The board's own files, and a way back",
+            goal = "A board with an SD card keeps its lists, its logs and a copy of its settings on the " +
+                "card - which is how a session survives a reboot, and how a bad change is undone.",
+            steps = listOf(
+                ScenarioStep("What is on the card", FirmwareCommands.ls("/spiffs")),
+                ScenarioStep("Write the access-point list there", FirmwareCommands.saveList("a")),
+                ScenarioStep("Take it back after a reboot", FirmwareCommands.loadList("a")),
+                ScenarioStep("A copy of the board's settings before changing anything", FirmwareCommands.backupSpiffs()),
+                ScenarioStep("Did the copy finish", FirmwareCommands.backupStatus()),
+                ScenarioStep("Undo everything back to that copy", FirmwareCommands.restoreSpiffs()),
+                ScenarioStep("Replace the firmware from the card", FirmwareCommands.updateFromSd()),
+            ),
+            outcome = "Files and settings on the card, written and read by the board itself, with its " +
+                "own answers shown. A restore replaces settings every screen of the app writes to, " +
+                "which is the point of having it.",
+            warn = "The card is the whole subject: without an SD socket these verbs answer nothing. An " +
+                "update from the card is also the one step here the app cannot undo - it writes over " +
+                "the firmware, and the only way back is another update or a flash.",
+            run = ScenarioRun.NAVIGATE,
+            navigate = MenuAction.Submenu("device_files"),
+            icon = Icons.Filled.Folder,
+            accent = Accent.DEVICE,
+            requiresCaps = setOf("sd"),
+        ),
+
+        Scenario(
+            id = "ssid-list",
+            title = "A list of names to work with",
+            goal = "Karma-style answers, an evil portal and a beacon flood all read their names from " +
+                "the board's SSID list. That list is built here, and its slots are what those commands take.",
+            steps = listOf(
+                ScenarioStep("A batch of names, made up", FirmwareCommands.ssidGenerate(20)),
+                ScenarioStep("One name you chose", requireNotNull(FirmwareCommands.ssidAdd("lab-network"))),
+                ScenarioStep("The rows, with their slots", FirmwareCommands.listDump("s")),
+                ScenarioStep("Answer only those names", FirmwareCommands.toggleAllSsids()),
+                ScenarioStep("Take one name out", FirmwareCommands.ssidRemove(0)),
+                ScenarioStep("Empty the list", FirmwareCommands.clearList("s")),
+            ),
+            outcome = "An SSID list with visible slots, ready for the portal and the beacon attacks. " +
+                "The names the board answers with are exactly the ones on this list, so the list is " +
+                "shown rather than remembered.",
+            run = ScenarioRun.NAVIGATE,
+            navigate = MenuAction.Submenu("wifi_lists"),
+            icon = Icons.Filled.Numbers,
+            accent = Accent.GENERAL,
         ),
     )
 
