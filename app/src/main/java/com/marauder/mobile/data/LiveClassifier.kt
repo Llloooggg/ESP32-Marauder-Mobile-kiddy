@@ -15,7 +15,7 @@ object LiveClassifier {
     private val continuousHeads = setOf(
         "sniffprobe", "sniffbeacon", "sniffdeauth", "sniffpwn", "sniffpinescan",
         "sniffmultissid", "sniffpmkid", "sniffsae", "sniffraw", "sniffbt", "sniffskim",
-        "scanall", "scansta", "sigmon", "mactrack", "packetcount",
+        "scanall", "sigmon", "mactrack", "packetcount",
         "attack", "blespam", "karma", "evilportal", "spoofat",
         "pingscan", "arpscan", "portscan",
         "gpsdata", "nmea", "gpstracker", "wardrive", "analyzer",
@@ -23,12 +23,17 @@ object LiveClassifier {
         "foxhunt", "csimotion", "remoteid", "recon", "findmy",
     )
 
+    // NOTE: `scansta` and `btwardrive` are deliberately absent. Both verbs are commented
+    // out in the firmware we speak to (CommandLine.h:86 and :138 of both the upstream and
+    // the json-serial tree), so the CLI never dispatches them — sending one would only
+    // produce a silent no-op. The station list is filled by `scanall` (WIFI_SCAN_AP_STA,
+    // CommandLine.cpp:1028-1031) and read with `jsonlist c`.
+
     fun of(command: String): LiveSpec {
         val c = command.trim()
         val head = c.substringBefore(' ')
         val list = when {
             head == "scanall" || head == "sniffbeacon" -> ListType.ACCESS_POINTS
-            head == "scansta" -> ListType.STATIONS
             head == "sniffprobe" -> ListType.PROBES
             head == "sniffbt" && c.contains("airtag") -> ListType.AIRTAGS
             head == "pingscan" || head == "arpscan" -> ListType.IPS

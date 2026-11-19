@@ -22,7 +22,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -38,12 +40,14 @@ import com.marauder.mobile.data.Catalog
 import com.marauder.mobile.data.ListType
 import com.marauder.mobile.data.MenuAction
 import com.marauder.mobile.data.MenuItem
+import com.marauder.mobile.ui.components.ArgDialog
 import com.marauder.mobile.ui.components.TermsOverlay
 import com.marauder.mobile.ui.screens.AboutScreen
 import com.marauder.mobile.ui.screens.AnalyzerScreen
 import com.marauder.mobile.ui.screens.ApDetailScreen
 import com.marauder.mobile.ui.screens.ArtifactDetailScreen
 import com.marauder.mobile.ui.screens.ArtifactsScreen
+import com.marauder.mobile.ui.screens.BoardSettingsScreen
 import com.marauder.mobile.ui.screens.ConnectScreen
 import com.marauder.mobile.ui.screens.ConsoleScreen
 import com.marauder.mobile.ui.screens.CrackScreen
@@ -83,6 +87,7 @@ private object Routes {
     const val LIVE = "live"
     const val ABOUT = "about"
     const val SETTINGS = "settings"
+    const val BOARD_SETTINGS = "board_settings"
     const val POSTURE = "posture"
     const val FLASH = "flash"
     const val EVIL_PORTAL = "evil_portal_screen"
@@ -249,16 +254,30 @@ fun AppRoot() {
                 arguments = listOf(navArgument("id") { type = NavType.StringType }),
             ) { entry ->
                 val id = entry.arguments?.getString("id") ?: Catalog.ROOT
+                // Commands that need one argument are prompted for it here, before anything
+                // is sent: the composed command is shown in the dialog.
+                var pendingArg by remember { mutableStateOf<MenuItem?>(null) }
                 MenuScreen(
                     screenId = id,
                     vm = vm,
-                    onItemClick = { item -> handleAction(item, nav, vm) },
+                    onItemClick = { item -> handleAction(item, nav, vm) { pendingArg = it } },
                     onBack = { nav.popBackStack() },
                     onOpenConsole = { nav.navigate(Routes.CONSOLE) },
                     onOpenAbout = { nav.navigate(Routes.ABOUT) },
                     onOpenSettings = { nav.navigate(Routes.SETTINGS) },
                     onDisconnect = { vm.disconnect() },
                 )
+                pendingArg?.let { item ->
+                    ArgDialog(
+                        item = item,
+                        onDismiss = { pendingArg = null },
+                        onSend = { value ->
+                            val action = item.action as MenuAction.Arg
+                            pendingArg = null
+                            nav.navigate(Routes.live(item.title, "${action.base} $value"))
+                        },
+                    )
+                }
             }
 
             composable(
@@ -290,6 +309,10 @@ fun AppRoot() {
                     onOpenWordlists = { nav.navigate(Routes.WORDLISTS) },
                     onOpenAbout = { nav.navigate(Routes.ABOUT) },
                 )
+            }
+
+            composable(Routes.BOARD_SETTINGS) {
+                BoardSettingsScreen(vm = vm, onBack = { nav.popBackStack() })
             }
 
             composable(Routes.FLASH) {
@@ -388,10 +411,12 @@ private fun handleAction(
     item: MenuItem,
     nav: NavHostController,
     vm: MarauderViewModel,
+    onAskArg: (MenuItem) -> Unit = {},
 ) {
     when (val action = item.action) {
         is MenuAction.Submenu -> nav.navigate(Routes.menu(action.id))
         is MenuAction.Send -> nav.navigate(Routes.live(item.title, action.command))
+        is MenuAction.Arg -> onAskArg(item)
         is MenuAction.OpenList -> {
             vm.refreshList(action.type)
             nav.navigate(Routes.list(action.type))
@@ -401,5 +426,6 @@ private fun handleAction(
         MenuAction.OpenFlash -> nav.navigate(Routes.FLASH)
         MenuAction.OpenEvilPortal -> nav.navigate(Routes.EVIL_PORTAL)
         MenuAction.OpenPosture -> nav.navigate(Routes.POSTURE)
+        MenuAction.OpenBoardSettings -> nav.navigate(Routes.BOARD_SETTINGS)
     }
 }

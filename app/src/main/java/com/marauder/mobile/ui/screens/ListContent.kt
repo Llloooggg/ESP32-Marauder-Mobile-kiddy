@@ -19,13 +19,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.SettingsInputAntenna
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.TrackChanges
+import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -43,6 +48,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.marauder.mobile.data.FirmwareCommands
 import com.marauder.mobile.data.ListType
 import com.marauder.mobile.protocol.DeviceMessage
 import com.marauder.mobile.ui.components.EmptyState
@@ -77,7 +83,7 @@ fun ListContent(
 
     Column(modifier = modifier.fillMaxSize()) {
         if (showActions) {
-            ActionBar(type = type, onScan = { vm.runCommand("scanall") }, onAction = ::sendAndRefresh)
+            ActionBar(type = type, onScan = { vm.runCommand(FirmwareCommands.SCAN_ALL) }, onAction = ::sendAndRefresh)
         }
         Box(modifier = Modifier.fillMaxSize()) {
             when (type) {
@@ -87,9 +93,9 @@ fun ListContent(
                         items(data, key = { it.index }) { ap ->
                             ApRow(
                                 ap,
-                                onToggle = { sendAndRefresh("select -a ${ap.index}") },
-                                onHunt = { onOpenLive("Fox Hunt", "foxhunt -w ${ap.index}") },
-                                onCsi = { onOpenLive("CSI Motion", "csimotion start ${ap.index}") },
+                                onToggle = { sendAndRefresh(FirmwareCommands.toggleAp(ap.index)) },
+                                onHunt = { onOpenLive("Fox Hunt", FirmwareCommands.foxhuntAp(ap.index)) },
+                                onCsi = { onOpenLive("CSI Motion", FirmwareCommands.csimotionStart(ap.index)) },
                             )
                         }
                     }
@@ -97,13 +103,23 @@ fun ListContent(
                 ListType.STATIONS -> {
                     val data by vm.stations.collectAsState()
                     ListBody(data.isEmpty(), isLoading, "No stations", "Run Scan AP/STA, then refresh.") {
-                        items(data, key = { "${it.ap}-${it.index}" }) { StaRow(it) { sendAndRefresh("select -c ${it.index}") } }
+                        items(data, key = { "${it.ap}-${it.index}" }) {
+                            StaRow(it, onToggle = { sendAndRefresh(FirmwareCommands.toggleStation(it.index)) })
+                        }
                     }
                 }
                 ListType.SSIDS -> {
                     val data by vm.ssids.collectAsState()
                     ListBody(data.isEmpty(), isLoading, "No SSIDs", "Generate or load SSIDs, then refresh.") {
-                        items(data, key = { it.index }) { SsidRow(it) { sendAndRefresh("select -s ${it.index}") } }
+                        items(data, key = { it.index }) {
+                            SsidRow(
+                                it,
+                                onToggle = { sendAndRefresh(FirmwareCommands.toggleSsid(it.index)) },
+                                // `ssid -r <index>` is the firmware's own removal; the row's
+                                // index is the slot it showed up with in this list.
+                                onRemove = { sendAndRefresh(FirmwareCommands.ssidRemove(it.index)) },
+                            )
+                        }
                     }
                 }
                 ListType.IPS -> {
@@ -115,7 +131,11 @@ fun ListContent(
                 ListType.PROBES -> {
                     val data by vm.probes.collectAsState()
                     ListBody(data.isEmpty(), isLoading, "No probe requests", "Run Probe Request Sniff, then refresh.") {
-                        items(data, key = { it.index }) { ProbeRow(it) }
+                        items(data, key = { it.index }) {
+                            // `karma -p <index>` addresses this exact row: the firmware's
+                            // karma index is a row of the probe-request list.
+                            ProbeRow(it, onKarma = { onOpenLive("Karma Clone", FirmwareCommands.karmaProbe(it.index)) })
+                        }
                     }
                 }
                 ListType.AIRTAGS -> {
@@ -127,13 +147,17 @@ fun ListContent(
                 ListType.DRONES -> {
                     val data by vm.drones.collectAsState()
                     ListBody(data.isEmpty(), isLoading, "No drones", "Run a Remote ID scan, then refresh.") {
-                        items(data, key = { it.index }) { DroneRow(it) }
+                        items(data, key = { it.index }) {
+                            DroneRow(it, onTrack = { onOpenLive("Track Drone", FirmwareCommands.remoteId("track", it.index)) })
+                        }
                     }
                 }
                 ListType.GEOFENCES -> {
                     val data by vm.geofences.collectAsState()
                     ListBody(data.isEmpty(), isLoading, "No geofences", "Set a geofence, then refresh.") {
-                        items(data, key = { it.index }) { FenceRow(it) }
+                        items(data, key = { it.index }) {
+                            FenceRow(it, onClear = { sendAndRefresh(FirmwareCommands.geofenceClear(it.index)) })
+                        }
                     }
                 }
             }
@@ -177,19 +201,27 @@ private fun ActionBar(type: ListType, onScan: () -> Unit, onAction: (String) -> 
         when (type) {
             ListType.ACCESS_POINTS -> {
                 ActionChip("Scan", Icons.Filled.Wifi, CatWifi, onScan)
-                ActionChip("Select all", Icons.Filled.DoneAll, MarauderCyan) { onAction("select -a all") }
-                ActionChip("Save", Icons.Filled.Save, Success) { onAction("save -a") }
-                ActionChip("Clear", Icons.Filled.DeleteSweep, Danger) { onAction("clearlist -a") }
+                ActionChip("Select all", Icons.Filled.DoneAll, MarauderCyan) { onAction(FirmwareCommands.toggleAllAps()) }
+                ActionChip("Save", Icons.Filled.Save, Success) { onAction(FirmwareCommands.saveList("a")) }
+                ActionChip("Clear", Icons.Filled.DeleteSweep, Danger) { onAction(FirmwareCommands.clearList("a")) }
             }
             ListType.STATIONS -> {
                 ActionChip("Scan", Icons.Filled.Wifi, CatWifi, onScan)
-                ActionChip("Select all", Icons.Filled.DoneAll, MarauderCyan) { onAction("select -c all") }
-                ActionChip("Clear", Icons.Filled.DeleteSweep, Danger) { onAction("clearlist -c") }
+                ActionChip("Select all", Icons.Filled.DoneAll, MarauderCyan) { onAction(FirmwareCommands.toggleAllStations()) }
+                ActionChip("Clear", Icons.Filled.DeleteSweep, Danger) { onAction(FirmwareCommands.clearList("c")) }
             }
             ListType.SSIDS -> {
-                ActionChip("Select all", Icons.Filled.DoneAll, MarauderCyan) { onAction("select -s all") }
-                ActionChip("Save", Icons.Filled.Save, Success) { onAction("save -s") }
-                ActionChip("Clear", Icons.Filled.DeleteSweep, Danger) { onAction("clearlist -s") }
+                ActionChip("Generate 20", Icons.Filled.Shuffle, MarauderCyan) { onAction(FirmwareCommands.ssidGenerate(20)) }
+                ActionChip("Select all", Icons.Filled.DoneAll, MarauderCyan) { onAction(FirmwareCommands.toggleAllSsids()) }
+                ActionChip("Save", Icons.Filled.Save, Success) { onAction(FirmwareCommands.saveList("s")) }
+                ActionChip("Clear", Icons.Filled.DeleteSweep, Danger) { onAction(FirmwareCommands.clearList("s")) }
+            }
+            ListType.DRONES -> {
+                ActionChip("Scan", Icons.Filled.Radar, CatWifi) { onAction(FirmwareCommands.remoteId("scan")) }
+                ActionChip("Clear", Icons.Filled.DeleteSweep, Danger) { onAction(FirmwareCommands.remoteId("clear")) }
+            }
+            ListType.GEOFENCES -> {
+                ActionChip("Read Fences", Icons.AutoMirrored.Filled.FormatListBulleted, MarauderCyan) { onAction(FirmwareCommands.geofenceList()) }
             }
             else -> Unit
         }
@@ -305,12 +337,15 @@ private fun StaRow(sta: DeviceMessage.Sta, onToggle: () -> Unit) {
 }
 
 @Composable
-private fun SsidRow(ssid: DeviceMessage.SsidRow, onToggle: () -> Unit) {
+private fun SsidRow(ssid: DeviceMessage.SsidRow, onToggle: () -> Unit, onRemove: () -> Unit) {
     RowCard(selected = ssid.selected, onToggle = onToggle) {
         Column {
             Text(ssid.essid.ifBlank { "(empty)" }, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.size(2.dp))
-            Meta("CH ${ssid.channel}")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Meta("CH ${ssid.channel}")
+                ActionChip("Remove", Icons.Filled.DeleteSweep, Danger, onRemove)
+            }
         }
     }
 }
@@ -323,12 +358,15 @@ private fun IpRow(ip: DeviceMessage.Ip) {
 }
 
 @Composable
-private fun ProbeRow(probe: DeviceMessage.Probe) {
+private fun ProbeRow(probe: DeviceMessage.Probe, onKarma: () -> Unit) {
     RowCard(selected = probe.selected, onToggle = null) {
         Column {
             Text(probe.essid.ifBlank { "(broadcast)" }, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.size(2.dp))
-            Meta("${probe.requests} req")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Meta("${probe.requests} req")
+                ActionChip("Karma Clone", Icons.Filled.Whatshot, Danger, onKarma)
+            }
         }
     }
 }
@@ -345,7 +383,7 @@ private fun AirtagRow(tag: DeviceMessage.Airtag) {
 }
 
 @Composable
-private fun DroneRow(d: DeviceMessage.Rid) {
+private fun DroneRow(d: DeviceMessage.Rid, onTrack: () -> Unit) {
     RowCard(selected = false, onToggle = null) {
         Column {
             Text(
@@ -364,13 +402,16 @@ private fun DroneRow(d: DeviceMessage.Rid) {
                 Meta("No location")
             }
             Spacer(Modifier.size(4.dp))
-            Text("${d.rssi} dBm", style = MaterialTheme.typography.labelMedium, color = rssiColor(d.rssi), fontWeight = FontWeight.SemiBold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("${d.rssi} dBm", style = MaterialTheme.typography.labelMedium, color = rssiColor(d.rssi), fontWeight = FontWeight.SemiBold)
+                ActionChip("Track", Icons.Filled.TrackChanges, MarauderCyan, onTrack)
+            }
         }
     }
 }
 
 @Composable
-private fun FenceRow(f: DeviceMessage.Fence) {
+private fun FenceRow(f: DeviceMessage.Fence, onClear: () -> Unit) {
     RowCard(selected = f.enabled, onToggle = null) {
         Column {
             Text(
@@ -382,6 +423,8 @@ private fun FenceRow(f: DeviceMessage.Fence) {
             Spacer(Modifier.size(4.dp))
             Meta("%.5f, %.5f".format(f.lat, f.lon))
             Meta("Radius ${"%.2f".format(f.radiusMiles)} mi · ${if (f.enabled) "enabled" else "disabled"}")
+            Spacer(Modifier.size(6.dp))
+            ActionChip("Clear Slot ${f.index}", Icons.Filled.DeleteSweep, Danger, onClear)
         }
     }
 }

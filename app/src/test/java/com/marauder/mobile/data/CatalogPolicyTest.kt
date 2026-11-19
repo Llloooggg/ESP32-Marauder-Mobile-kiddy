@@ -11,30 +11,44 @@ import org.junit.Test
  */
 class CatalogPolicyTest {
 
-    /** Command heads verified against CommandLine.h / CommandLine.cpp. */
-    private val firmwareVerbs = setOf(
-        "add", "analyzer", "arpscan", "attack", "blespam", "brightness", "channel", "clearlist",
-        "clonestamac", "cloneapmac", "csimotion", "evilportal", "findmy", "foxhunt", "geofence",
-        "gps", "gpsdata", "gpspoi", "gpstracker", "info", "join", "karma", "led", "list", "load",
-        "ls", "mactrack", "nmea", "packetcount", "pingscan", "portscan", "randapmac", "randstamac",
-        "reboot", "recon", "remoteid", "save", "scanall", "scansta", "select", "settings",
-        "sniffbeacon", "sniffbt", "sniffdeauth", "sniffmultissid", "sniffpinescan", "sniffpmkid",
-        "sniffprobe", "sniffpwn", "sniffraw", "sniffsae", "sniffskim", "spoofat", "stopscan",
-        "ssid", "update", "upload", "wardrive", "wardrivepoi",
-        // App-protocol extensions answered by the JSON layer, not the CLI parser.
-        "jsoninfo", "jsonstatus", "jsonlist",
-    )
+    /** Command heads verified against CommandLine.h / CommandLine.cpp (see [FirmwareCommands]). */
+    private val firmwareVerbs: Set<String> = FirmwareCommands.verbs
 
     private val allItems: List<MenuItem> = Catalog.screens.getValue(Catalog.ROOT).items +
         Catalog.screens.values.flatMap { it.items }
 
+    /** The verb a catalog entry sends, whether the command is fixed or takes one argument. */
+    private fun headOf(item: MenuItem): String? = when (val a = item.action) {
+        is MenuAction.Send -> a.command.trim().substringBefore(' ')
+        is MenuAction.Arg -> a.base.trim().substringBefore(' ')
+        is MenuAction.OpenAnalyzer -> a.command.trim().substringBefore(' ')
+        else -> null
+    }
+
     @Test
     fun everySendCommandUsesAFirmwareVerb() {
-        val unknown = allItems.mapNotNull { (it.action as? MenuAction.Send)?.command }
-            .map { it.trim().substringBefore(' ') }
+        val unknown = allItems.mapNotNull { headOf(it) }
             .filter { it !in firmwareVerbs }
             .distinct()
         assertEquals("commands not present in the firmware: $unknown", emptyList<String>(), unknown)
+    }
+
+    /**
+     * The firmware has these verbs commented out, so its CLI never dispatches them. If any
+     * command the app can build used one, the user would get a silent no-op instead of a
+     * result — and this test would say so.
+     */
+    @Test
+    fun verbsTheFirmwareHasCommentedOutAreNeverSent() {
+        val built = allItems.mapNotNull { (it.action as? MenuAction.Send)?.command } +
+            FirmwareCommands.dynamic.values +
+            listOf(
+                FirmwareCommands.analyzer("wifi"),
+                FirmwareCommands.sniffPmkid(6, deauth = true, listOnly = true),
+                FirmwareCommands.stopscan(force = true),
+            )
+        val dead = built.filter { cmd -> FirmwareCommands.neverSend.any { verb -> cmd.trim().startsWith(verb) } }
+        assertEquals("commands the firmware does not dispatch: $dead", emptyList<String>(), dead)
     }
 
     @Test
@@ -57,7 +71,7 @@ class CatalogPolicyTest {
         assertTrue(
             "HIGH is reserved for spam/spoof transmitters, not for anything merely targeted: ${high.map { it.title }}",
             high.all {
-                val head = (it.action as? MenuAction.Send)?.command?.trim()?.substringBefore(' ')
+                val head = headOf(it)
                 head == "blespam" || head == "spoofat"
             },
         )

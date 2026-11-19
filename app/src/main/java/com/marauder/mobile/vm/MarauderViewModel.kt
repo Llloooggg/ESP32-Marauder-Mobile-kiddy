@@ -8,10 +8,13 @@ import com.marauder.mobile.capture.CaptureSink
 import com.marauder.mobile.data.AnalyzerKind
 import com.marauder.mobile.data.ArtifactRecord
 import com.marauder.mobile.data.ArtifactsRepository
+import com.marauder.mobile.data.BoardSetting
 import com.marauder.mobile.data.CaptureOps
 import com.marauder.mobile.data.GpxAssembler
 import com.marauder.mobile.data.DeviceInfoForJournal
 import com.marauder.mobile.data.FirmwareArg
+import com.marauder.mobile.data.FirmwareCommands
+import com.marauder.mobile.data.FirmwareSettings
 import com.marauder.mobile.data.HashExtractResult
 import com.marauder.mobile.data.JournalEntry
 import com.marauder.mobile.data.ListCsv
@@ -414,6 +417,135 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
      *  so a live screen can show only the output produced by its own command. */
     fun consoleMark(): Long = consoleSeq
 
+    // --- Board settings (`settings`, plain text, not JSON) ----------------------
+
+    private val _boardSettings = MutableStateFlow<List<BoardSetting>>(emptyList())
+    private val _boardSettingsBusy = MutableStateFlow(false)
+    private val _boardSettingsError = MutableStateFlow<String?>(null)
+
+    /**
+     * The board's own settings, parsed from its `settings` dump. The firmware prints that
+     * dump as `Name:/Type:/Value:` lines ([FirmwareSettings]) and redacts the client
+     * password itself, so this is the whole truth the device is willing to tell.
+     */
+    val boardSettings: StateFlow<List<BoardSetting>> = _boardSettings.asStateFlow()
+
+    /** True while a `settings` read is in flight. */
+    val boardSettingsBusy: StateFlow<Boolean> = _boardSettingsBusy.asStateFlow()
+
+    /** Why the last read failed, or null when it did not. */
+    val boardSettingsError: StateFlow<String?> = _boardSettingsError.asStateFlow()
+
+    /**
+     * The lines of the dump currently being collected; null when no read is in flight.
+     * Collection starts at the device's own `#settings` echo, so the app's console echo of
+     * the command can never be mistaken for the start.
+     */
+    private var settingsSink: StringBuilder? = null
+    private var settingsArmed = false
+    private var settingsTimeout: Job? = null
+
+    /** What to do with the read-back of a settings write, once it arrives. */
+    private data class SettingsCheck(val key: String, val want: Boolean)
+    private var pendingSettingsCheck: SettingsCheck? = null
+
+    /** Ask the board what its settings are; the answer lands in [boardSettings]. */
+    fun requestBoardSettings() {
+        if (usb.status.value != UsbSerialManager.Status.CONNECTED) {
+            _snackbar.tryEmit("Not connected to a board")
+            return
+        }
+        _boardSettingsBusy.value = true
+        _boardSettingsError.value = null
+        settingsArmed = false
+        settingsSink = StringBuilder()
+        runCommand(FirmwareCommands.settingsDump())
+        // `settings` has no end marker, so a JSON command follows it as one: the firmware
+        // answers jsonstatus with an `@J` line, and that line is what closes the dump.
+        runCommand(FirmwareCommands.JSON_STATUS)
+        settingsTimeout?.cancel()
+        settingsTimeout = viewModelScope.launch {
+            delay(SETTINGS_READ_MS)
+            finishSettingsCapture(timeout = true)
+        }
+    }
+
+    /**
+     * Change one boolean setting, then read the dump back. A write the board refuses
+     * ("Could not successfully update setting …") or that does not show up in the
+     * read-back is reported as failed — the app never claims a board state it cannot show.
+     */
+    fun setBoardSetting(setting: BoardSetting, enable: Boolean) {
+        if (!setting.editable) {
+            _snackbar.tryEmit("${setting.name} is not a switch the firmware lets the app set")
+            return
+        }
+        pendingSettingsCheck = SettingsCheck(setting.name, enable)
+        runCommand(FirmwareCommands.settingsSet(setting.name, enable))
+        requestBoardSettings()
+    }
+
+    /**
+     * Feed one device line to a running `settings` read. Returns true when the line
+     * belongs to the dump and should not be shown as ordinary console output.
+     */
+    private fun feedSettingsCapture(line: String): Boolean {
+        val sink = settingsSink ?: return false
+        if (line.startsWith("#")) {
+            // The firmware echoes every CLI line as `#<line>`; the dump begins after its echo.
+            if (!settingsArmed && line.contains(FirmwareCommands.SETTINGS)) settingsArmed = true
+            else if (settingsArmed) finishSettingsCapture(timeout = false)
+            return settingsArmed
+        }
+        if (!settingsArmed) return false
+        if (line.contains(FirmwareSettings.WRITE_FAILED)) {
+            _boardSettingsError.value = "the board rejected the last settings change"
+            _snackbar.tryEmit("The board rejected that change")
+        }
+        sink.appendLine(line)
+        return true
+    }
+
+    private fun finishSettingsCapture(timeout: Boolean) {
+        val sink = settingsSink
+        settingsSink = null
+        settingsArmed = false
+        settingsTimeout?.cancel()
+        settingsTimeout = null
+        _boardSettingsBusy.value = false
+        val parsed = FirmwareSettings.parse(sink?.toString().orEmpty())
+        if (parsed.isEmpty()) {
+            if (_boardSettingsError.value == null) {
+                _boardSettingsError.value = if (timeout)
+                    "the board did not answer the settings request"
+                else
+                    "the board's settings dump had nothing in it to read"
+            }
+        } else {
+            _boardSettings.value = parsed
+            _boardSettingsError.value = null
+        }
+        pendingSettingsCheck?.let { check ->
+            pendingSettingsCheck = null
+            val now = parsed.firstOrNull { it.name == check.key }
+            when {
+                now == null -> {
+                    appendConsole("✗ `${check.key}` is not in the board's settings any more — the change cannot be confirmed", LineKind.ERROR)
+                    _snackbar.tryEmit("Could not confirm ${check.key}")
+                }
+                now.enabled == check.want ->
+                    appendConsole("✓ `${check.key}` is now ${if (check.want) "on" else "off"} (read back from the board)", LineKind.SYSTEM)
+                else -> {
+                    appendConsole(
+                        "✗ `${check.key}` still reads ${now.value} — the write did not land, the board is unchanged",
+                        LineKind.ERROR,
+                    )
+                    _snackbar.tryEmit("${check.key} did not change")
+                }
+            }
+        }
+    }
+
     /** Run [command] and keep its live view fed: poll status (and its list, if any)
      *  every ~1.3 s while it runs so counters and rows update in real time.
      *
@@ -434,6 +566,32 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             "nmea" -> { startGpsConsole(nmea = true); return }
             "gpstracker" -> { if (trimmed.contains("stop")) stopTracking() else startTracking(); return }
             "gpspoi" -> { handlePoi(trimmed); return }
+        }
+
+        // A scan verb whose own parser throws `-c` away can still be pinned to a channel:
+        // set the channel and switch the gated hop off first. Modes that hop regardless are
+        // named out loud instead of leaving a wrong-channel capture to look like an empty one.
+        if (CaptureOps.channelFlagIgnored(trimmed)) {
+            val ch = CaptureOps.pinnedChannel(trimmed)
+            if (CaptureOps.channelPinWillHold(trimmed)) {
+                scanSetupJob?.cancel()
+                scanSetupJob = viewModelScope.launch {
+                    prepareChannelPin(ch)
+                    launchLiveCommand(trimmed, list)
+                }
+                return
+            }
+            if (CaptureOps.alwaysHops(trimmed)) {
+                appendConsole(
+                    "⚠ `$head` does not read `-c` at all, and its scan mode hops whatever the settings say: " +
+                        "the board will walk the channels. Use a sniffer that can be pinned " +
+                        "(sniffbeacon / sniffprobe / sniffdeauth / sniffraw with -c, or sniffpmkid -c) " +
+                        "to hold one channel.",
+                    LineKind.SYSTEM,
+                )
+            } else {
+                appendConsole("⚠ `$head` ignores `-c`; the board starts on its current channel", LineKind.SYSTEM)
+            }
         }
 
         // A passive PMKID/EAPOL sniff has to be set up before it runs, or the pcap comes
@@ -480,6 +638,33 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     /** Setup for the untargeted EAPOL/PMKID sniff; false = do not start it. */
     private var sniffSetupJob: Job? = null
 
+    /** Setup for a channel-pinned scan whose own verb ignores `-c`. */
+    private var scanSetupJob: Job? = null
+
+    /**
+     * Pin the radio for a scan whose verb ignores `-c`
+     * (`CommandLine::startScanFromCLI` never reads the arguments it is given). The firmware
+     * has one channel-setting verb — `channel -s <n>` — and the hop loop of these modes is
+     * gated by `ChanHop`, so the two together hold the channel.
+     *
+     * The board's own reply is what proves it: `channel` prints the channel it has set, and
+     * that line lands in the console the screen is showing. The app does not claim the pin
+     * on its own authority.
+     */
+    private fun prepareChannelPin(channel: Int) {
+        if (usb.status.value != UsbSerialManager.Status.CONNECTED) return
+        if (!hopDisabled) {
+            runCommand(FirmwareCommands.settingsSet("ChanHop", false))
+            hopDisabled = true
+        }
+        runCommand(FirmwareCommands.channelSet(channel))
+        appendConsole(
+            "Channel held for this run: the board answers `channel -s $channel` with the channel it set, " +
+                "and the hop is off while it runs (it is restored when you leave this screen).",
+            LineKind.SYSTEM,
+        )
+    }
+
     /** The board's `ChanHop` setting is off because this app turned it off. */
     private var hopDisabled = false
 
@@ -508,6 +693,18 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             appendConsole(
                 "ChanHop off: `-c ${CaptureOps.pinnedChannel(command)}` only sets the channel once — while that " +
                     "setting is on the scan loop hops away after 2 s. It is restored when this stops.",
+                LineKind.SYSTEM,
+            )
+        }
+        if (CaptureOps.unhoppableHopping(command)) {
+            // The honest warning: this mode is not gated by `ChanHop`, so nothing the app
+            // can write keeps the radio on the pinned channel. Saying so beats an empty
+            // pcap that looks like nobody was on the network.
+            appendConsole(
+                "⚠ `-d` without `-l` runs the active EAPOL scan, and that mode hops every 2 s whatever " +
+                    "the settings say — `-c ${CaptureOps.pinnedChannel(command)}` is only where it starts. " +
+                    "To hold one channel, capture from the network's own screen: it pins the target and " +
+                    "adds `-l`, which hops only across the selected networks.",
                 LineKind.SYSTEM,
             )
         }
@@ -581,6 +778,8 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         liveJob = null
         sniffSetupJob?.cancel()
         sniffSetupJob = null
+        scanSetupJob?.cancel()
+        scanSetupJob = null
         _listLoading.value = null
         if (wardriving) stopWardrive()
         if (gpsTracking) { stopTracking(); return } // stopTracking closes the GPX + capture itself
@@ -1699,11 +1898,19 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     private fun onLine(line: String) {
         when (val parsed = LineParser.parse(line)) {
             is ParsedLine.Console -> if (parsed.raw.isNotBlank()) {
+                if (feedSettingsCapture(parsed.raw)) return
                 onConsoleLine(parsed.raw)
                 appendConsole(parsed.raw, LineKind.OUTPUT)
             }
             is ParsedLine.Malformed -> appendConsole(parsed.raw, LineKind.OUTPUT)
-            is ParsedLine.Structured -> handleMessage(parsed.message)
+            is ParsedLine.Structured -> {
+                // A structured answer is the end marker of a `settings` read (the jsonstatus
+                // this app sends right after it). While the dump has not started yet, an
+                // unrelated structured answer (the live status poll) must not end the read —
+                // the timeout is what reports a read that never produced anything.
+                if (settingsSink != null && settingsSink!!.isNotEmpty()) finishSettingsCapture(timeout = false)
+                handleMessage(parsed.message)
+            }
         }
     }
 
@@ -1937,6 +2144,9 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
 
         /** How long a `jsonlist a` may take to answer during pinning. */
         private const val PIN_LIST_ACK_MS = 3000L
+
+        /** How long a `settings` dump may take to arrive before the read is called failed. */
+        private const val SETTINGS_READ_MS = 2500L
 
         /** Selection attempts before refusing a targeted action. */
         private const val PIN_MAX_ATTEMPTS = 3

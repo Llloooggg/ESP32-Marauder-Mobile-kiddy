@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CreditCard
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.DeveloperBoard
 import androidx.compose.material.icons.filled.Devices
@@ -124,6 +125,18 @@ sealed interface MenuAction {
     /** Open the network-posture screen: join a network with the board, sweep that
      *  segment (ping/ARP), then port-scan the hosts the board actually found. */
     data object OpenPosture : MenuAction
+
+    /**
+     * A firmware command that takes one argument the board must be told: the app asks for
+     * the value and sends `[base] [value]`. [base] is always built from a
+     * [FirmwareCommands] prefix constant, so the verb cannot drift from what the firmware
+     * parses, and [hint] says where the number or text comes from (usually a row of a
+     * firmware list) instead of leaving the user to guess an index.
+     */
+    data class Arg(val base: String, val hint: String, val example: String = "") : MenuAction
+
+    /** Open the board's own settings screen (`settings` dump + boolean writes). */
+    data object OpenBoardSettings : MenuAction
 }
 
 data class MenuItem(
@@ -214,6 +227,14 @@ object Catalog {
                     MenuItem("Recon Mission", "recon wifi", Icons.Filled.Radar, Accent.SNIFFER, MenuAction.Send("recon wifi"), requiresCaps = setOf("recon")),
                     MenuItem("MAC Monitor", "mactrack", Icons.Filled.TrackChanges, Accent.SNIFFER, MenuAction.Send("mactrack")),
                     MenuItem("SAE Commit", "sniffsae", Icons.Filled.Lock, Accent.SNIFFER, MenuAction.Send("sniffsae")),
+                    MenuItem("CSI Motion Status", "csimotion status", Icons.Filled.Sensors, Accent.SNIFFER,
+                        MenuAction.Send(FirmwareCommands.csimotionStatus()), requiresCaps = setOf("csi")),
+                    MenuItem("CSI Motion Recalibrate", "csimotion recalibrate", Icons.Filled.Insights, Accent.SNIFFER,
+                        MenuAction.Send(FirmwareCommands.csimotionRecalibrate()), requiresCaps = setOf("csi")),
+                    MenuItem("Recon Status", "recon status", Icons.Filled.Radar, Accent.SCANNER,
+                        MenuAction.Send(FirmwareCommands.recon("status")), requiresCaps = setOf("recon")),
+                    MenuItem("Recon Stop", "recon stop", Icons.Filled.Stop, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.recon("stop")), requiresCaps = setOf("recon")),
                 ),
             ),
         )
@@ -231,6 +252,13 @@ object Catalog {
                     MenuItem("Ping Scan", "pingscan", Icons.Filled.NetworkCheck, Accent.SCANNER, MenuAction.Send("pingscan")),
                     MenuItem("ARP Scan", "arpscan -f", Icons.Filled.Lan, Accent.SCANNER, MenuAction.Send("arpscan -f")),
                     MenuItem("Port Scan All", "portscan -a -t 0", Icons.Filled.SettingsEthernet, Accent.SCANNER, MenuAction.Send("portscan -a -t 0")),
+                    MenuItem(
+                        "Port Scan One Host",
+                        "portscan -a -t <IP list index>",
+                        Icons.Filled.Lan,
+                        Accent.SCANNER,
+                        MenuAction.Arg("${FirmwareCommands.PORTSCAN} -a -t", "index from the IP list (run a Ping/ARP scan first)", "0"),
+                    ),
                     MenuItem("SSH Scan", "portscan -s ssh", Icons.Filled.Terminal, Accent.SCANNER, MenuAction.Send("portscan -s ssh")),
                     MenuItem("Telnet Scan", "portscan -s telnet", Icons.AutoMirrored.Filled.Dvr, Accent.SCANNER, MenuAction.Send("portscan -s telnet")),
                     MenuItem("SMTP Scan", "portscan -s smtp", Icons.Filled.Email, Accent.SCANNER, MenuAction.Send("portscan -s smtp")),
@@ -262,6 +290,35 @@ object Catalog {
                     MenuItem("SAE Commit Flood", "attack -t sae", Icons.Filled.Lock, Accent.ATTACK, MenuAction.Send("attack -t sae"), dangerous = true),
                     MenuItem("Channel Switch", "attack -t csa", Icons.Filled.SwapHoriz, Accent.ATTACK, MenuAction.Send("attack -t csa"), dangerous = true),
                     MenuItem("Quiet Time", "attack -t quiet", Icons.AutoMirrored.Filled.VolumeOff, Accent.ATTACK, MenuAction.Send("attack -t quiet"), dangerous = true),
+                    MenuItem(
+                        "Targeted Deauth (two MACs)",
+                        "attack -t deauth -s <ap mac> -d <client mac>",
+                        Icons.Filled.GpsFixed,
+                        Accent.ATTACK,
+                        MenuAction.Arg(
+                            "${FirmwareCommands.ATTACK} -t deauth",
+                            "-s <AP mac> -d <client mac>, both from the AP / station lists",
+                            "-s AA:BB:CC:DD:EE:01 -d AA:BB:CC:DD:EE:02",
+                        ),
+                        dangerous = true,
+                    ),
+                    MenuItem(
+                        "Karma Clone One Probe SSID",
+                        "karma -p <probe list index>",
+                        Icons.Filled.Whatshot,
+                        Accent.ATTACK,
+                        MenuAction.Arg("${FirmwareCommands.KARMA} -p", "index from the Probe Requests list", "0"),
+                        dangerous = true,
+                    ),
+                    MenuItem(
+                        "Portal Page From SD",
+                        "evilportal -c sethtml <file>",
+                        Icons.Filled.Folder,
+                        Accent.ATTACK,
+                        MenuAction.Arg("${FirmwareCommands.EVIL_PORTAL} -c sethtml", "file name on the board's SD card", "index.html"),
+                        dangerous = true,
+                        requiresCaps = setOf("sd"),
+                    ),
                 ),
             ),
         )
@@ -287,6 +344,7 @@ object Catalog {
                     MenuItem("IP List", "Discovered hosts", Icons.Filled.Lan, Accent.GENERAL, MenuAction.OpenList(ListType.IPS)),
                     MenuItem("AirTags", "Detected AirTags", Icons.Filled.Luggage, Accent.GENERAL, MenuAction.OpenList(ListType.AIRTAGS)),
                     MenuItem("Set MACs", "Randomise / clone", Icons.Filled.Badge, Accent.GENERAL, MenuAction.Submenu("wifi_macs")),
+                    MenuItem("Lists & SSIDs", "Clear · save · firmware text dumps", Icons.AutoMirrored.Filled.FormatListBulleted, Accent.GENERAL, MenuAction.Submenu("wifi_lists")),
                     MenuItem("Join Saved WiFi", "join -s", Icons.AutoMirrored.Filled.Login, Accent.GENERAL, MenuAction.Send("join -s")),
                     MenuItem("Shutdown WiFi", "stopscan -f", Icons.Filled.PowerSettingsNew, Accent.GENERAL, MenuAction.Send("stopscan -f")),
                 ),
@@ -304,6 +362,64 @@ object Catalog {
             ),
         )
 
+        // ---------------- Lists, SSIDs, firmware text dumps ----------------
+        add(
+            MenuScreen(
+                "wifi_lists", "Lists & SSIDs",
+                listOf(
+                    MenuItem("Clear AP List", "clearlist -a", Icons.Filled.Delete, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.clearList("a"))),
+                    MenuItem("Clear Station List", "clearlist -c", Icons.Filled.Delete, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.clearList("c"))),
+                    MenuItem("Clear SSID List", "clearlist -s", Icons.Filled.Delete, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.clearList("s"))),
+                    MenuItem("Generate 20 SSIDs", "ssid -a -g 20", Icons.Filled.Shuffle, Accent.GENERAL,
+                        MenuAction.Send(FirmwareCommands.ssidGenerate(20))),
+                    MenuItem("Generate SSIDs", "ssid -a -g <count>", Icons.Filled.Numbers, Accent.GENERAL,
+                        MenuAction.Arg("${FirmwareCommands.SSID} -a -g", "how many random SSIDs to build", "50")),
+                    MenuItem("Add One SSID", "ssid -a -n <name>", Icons.Filled.Language, Accent.GENERAL,
+                        MenuAction.Arg("${FirmwareCommands.SSID} -a -n", "the SSID text to add", "lab-network")),
+                    MenuItem("Remove One SSID", "ssid -r <index>", Icons.Filled.Delete, Accent.GENERAL,
+                        MenuAction.Arg("${FirmwareCommands.SSID} -r", "index from the SSIDs list", "0")),
+                    MenuItem("Add AP By MAC", "add -a -b <mac>", Icons.Filled.Router, Accent.GENERAL,
+                        MenuAction.Arg("${FirmwareCommands.ADD} -a -b", "BSSID, optionally '-ch 6 -e lab ap'", "AA:BB:CC:DD:EE:FF")),
+                    MenuItem("Add Station By MAC", "add -c -b <mac>", Icons.Filled.Devices, Accent.GENERAL,
+                        MenuAction.Arg("${FirmwareCommands.ADD} -c -b", "station MAC", "AA:BB:CC:DD:EE:02")),
+                    MenuItem("Save AP List To SD", "save -a", Icons.Filled.Folder, Accent.DEVICE,
+                        MenuAction.Send(FirmwareCommands.saveList("a")), requiresCaps = setOf("sd")),
+                    MenuItem("Save SSIDs To SD", "save -s", Icons.Filled.Folder, Accent.DEVICE,
+                        MenuAction.Send(FirmwareCommands.saveList("s")), requiresCaps = setOf("sd")),
+                    MenuItem("Firmware Text Dumps", "list -a / -b / -f … in the console", Icons.AutoMirrored.Filled.FormatListBulleted, Accent.NEUTRAL,
+                        MenuAction.Submenu("firmware_lists")),
+                ),
+            ),
+        )
+        add(
+            MenuScreen(
+                "firmware_lists", "Firmware Text Dumps",
+                listOf(
+                    MenuItem("Access Points", "list -a · slot, channel, RSSI, selection", Icons.AutoMirrored.Filled.FormatListBulleted, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.listDump("a"))),
+                    MenuItem("SSIDs", "list -s", Icons.Filled.Language, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.listDump("s"))),
+                    MenuItem("Stations Per AP", "list -c", Icons.Filled.Devices, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.listDump("c"))),
+                    MenuItem("IP Hosts", "list -i", Icons.Filled.Lan, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.listDump("i"))),
+                    MenuItem("Probe SSIDs", "list -p · the indices `karma -p` uses", Icons.Filled.Podcasts, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.listDump("p"))),
+                    MenuItem("BLE Devices", "list -b · the indices `spoofat` / `findmy` / `foxhunt -b` use", Icons.Filled.Bluetooth, Accent.BLUETOOTH,
+                        MenuAction.Send(FirmwareCommands.listDump("b")), requiresCaps = setOf("bt")),
+                    MenuItem("Flippers", "list -f · the indices `foxhunt -f` uses", Icons.Filled.SmartToy, Accent.BLUETOOTH,
+                        MenuAction.Send(FirmwareCommands.listDump("f")), requiresCaps = setOf("bt")),
+                    MenuItem("Pineapple Hits", "list -x", Icons.Filled.Router, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.listDump("x"))),
+                    MenuItem("MultiSSID Groups", "list -m", Icons.Filled.Dns, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.listDump("m"))),
+                ),
+            ),
+        )
+
         // ---------------- Bluetooth ----------------
         add(
             MenuScreen(
@@ -311,6 +427,7 @@ object Catalog {
                 listOf(
                     MenuItem("Sniffers", "Detect & analyze", Icons.AutoMirrored.Filled.BluetoothSearching, Accent.BLUETOOTH, MenuAction.Submenu("bt_sniffers")),
                     MenuItem("Attacks", "BLE spam & spoof", Icons.Filled.Bolt, Accent.ATTACK, MenuAction.Submenu("bt_attacks")),
+                    MenuItem("Fox Hunt", "Direction finding: AP · BLE · Flipper", Icons.Filled.SettingsInputAntenna, Accent.SNIFFER, MenuAction.Submenu("bt_hunt")),
                 ),
             ),
         )
@@ -327,6 +444,12 @@ object Catalog {
                     MenuItem("Meta Detect", "sniffbt -t meta", Icons.Filled.Visibility, Accent.BLUETOOTH, MenuAction.Send("sniffbt -t meta")),
                     MenuItem("iBeacon Sniff", "sniffbt -t ibeacon", Icons.Filled.Sensors, Accent.BLUETOOTH, MenuAction.Send("sniffbt -t ibeacon")),
                     MenuItem("Remote ID (Drones)", "remoteid scan", Icons.Filled.Radar, Accent.BLUETOOTH, MenuAction.Send("remoteid scan"), requiresCaps = setOf("remoteid")),
+                    MenuItem("Remote ID List", "remoteid list", Icons.AutoMirrored.Filled.FormatListBulleted, Accent.BLUETOOTH,
+                        MenuAction.Send(FirmwareCommands.remoteId("list")), requiresCaps = setOf("remoteid")),
+                    MenuItem("Remote ID Track", "remoteid track <index>", Icons.Filled.TrackChanges, Accent.BLUETOOTH,
+                        MenuAction.Arg("${FirmwareCommands.REMOTE_ID} track", "index from the drone list", "0"), requiresCaps = setOf("remoteid")),
+                    MenuItem("Remote ID Clear", "remoteid clear", Icons.Filled.Delete, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.remoteId("clear")), requiresCaps = setOf("remoteid")),
                     MenuItem("Detect Card Skimmers", "sniffskim", Icons.Filled.CreditCard, Accent.BLUETOOTH, MenuAction.Send("sniffskim")),
                 ),
             ),
@@ -342,7 +465,53 @@ object Catalog {
                     MenuItem("Google BLE Spam", "blespam -t google", Icons.Filled.Android, Accent.ATTACK, MenuAction.Send("blespam -t google"), dangerous = true, tier = Tier.HIGH),
                     MenuItem("Flipper BLE Spam", "blespam -t flipper", Icons.Filled.SmartToy, Accent.ATTACK, MenuAction.Send("blespam -t flipper"), dangerous = true, tier = Tier.HIGH),
                     MenuItem("BLE Spam All", "blespam -t all", Icons.Filled.Campaign, Accent.ATTACK, MenuAction.Send("blespam -t all"), dangerous = true, tier = Tier.HIGH),
-                    MenuItem("Spoof Airtag", "spoofat -t 0", Icons.Filled.Luggage, Accent.ATTACK, MenuAction.Send("spoofat -t 0"), dangerous = true, tier = Tier.HIGH),
+                    MenuItem(
+                        "Spoof An AirTag",
+                        "spoofat -t <BLE list index>",
+                        Icons.Filled.Luggage,
+                        Accent.ATTACK,
+                        MenuAction.Arg(
+                            "${FirmwareCommands.SPOOF_AT} -t",
+                            "index from `list -b` (Firmware Text Dumps → BLE Devices)",
+                            "0",
+                        ),
+                        dangerous = true, tier = Tier.HIGH, requiresCaps = setOf("bt"),
+                    ),
+                    MenuItem(
+                        "Emulate A FindMy Tag",
+                        "findmy -t <BLE list index>",
+                        Icons.Filled.Luggage,
+                        Accent.ATTACK,
+                        MenuAction.Arg(
+                            "${FirmwareCommands.FINDMY} -t",
+                            "index from `list -b` (Firmware Text Dumps → BLE Devices)",
+                            "0",
+                        ),
+                        dangerous = true, requiresCaps = setOf("bt"),
+                    ),
+                ),
+            ),
+        )
+
+        // ---------------- Fox Hunt: direction finding by list slot ----------------
+        add(
+            MenuScreen(
+                "bt_hunt", "Fox Hunt",
+                listOf(
+                    MenuItem("Hunt An AP", "foxhunt -w <AP slot> · pick a row in the AP list", Icons.Filled.SettingsInputAntenna, Accent.SNIFFER,
+                        MenuAction.OpenList(ListType.ACCESS_POINTS), requiresCaps = setOf("foxhunt")),
+                    MenuItem("Hunt A BLE Device", "foxhunt -b <BLE index>", Icons.AutoMirrored.Filled.BluetoothSearching, Accent.BLUETOOTH,
+                        MenuAction.Arg("${FirmwareCommands.FOXHUNT} -b", "index from `list -b`", "0"), requiresCaps = setOf("foxhunt")),
+                    MenuItem("Hunt A FindMy Tag", "foxhunt -t <BLE index>", Icons.Filled.Luggage, Accent.BLUETOOTH,
+                        MenuAction.Arg("${FirmwareCommands.FOXHUNT} -t", "index from `list -b`", "0"), requiresCaps = setOf("foxhunt")),
+                    MenuItem("Hunt A Flipper", "foxhunt -f <flipper index>", Icons.Filled.SmartToy, Accent.BLUETOOTH,
+                        MenuAction.Arg("${FirmwareCommands.FOXHUNT} -f", "index from `list -f`", "0"), requiresCaps = setOf("foxhunt")),
+                    MenuItem("Hunt A Pineapple", "foxhunt -p 0", Icons.Filled.Router, Accent.SNIFFER,
+                        MenuAction.Send(FirmwareCommands.foxhuntPineapple()), requiresCaps = setOf("foxhunt")),
+                    MenuItem("Hunt MultiSSID Group", "foxhunt -m 0", Icons.Filled.Dns, Accent.SNIFFER,
+                        MenuAction.Send(FirmwareCommands.foxhuntMultiSsid()), requiresCaps = setOf("foxhunt")),
+                    MenuItem("BLE List", "list -b · the indices the hunt commands use", Icons.AutoMirrored.Filled.FormatListBulleted, Accent.BLUETOOTH,
+                        MenuAction.Send(FirmwareCommands.listDump("b")), requiresCaps = setOf("bt")),
                 ),
             ),
         )
@@ -358,7 +527,25 @@ object Catalog {
                     MenuItem("GPS Tracker", "gpstracker -c start", Icons.Filled.Route, Accent.GPS, MenuAction.Send("gpstracker -c start")),
                     MenuItem("Stop Tracker", "gpstracker -c stop", Icons.Filled.Stop, Accent.GPS, MenuAction.Send("gpstracker -c stop")),
                     MenuItem("GPS POI", "Mark points of interest", Icons.Filled.PushPin, Accent.GPS, MenuAction.Submenu("gps_poi")),
+                    MenuItem("Tag POI While Wardriving", "wardrivepoi [label]", Icons.Filled.PushPin, Accent.GPS,
+                        MenuAction.Arg(FirmwareCommands.WARDRIVE_POI, "optional label for the point", "campus")),
                     MenuItem("Geofences", "Configured fences", Icons.Filled.MyLocation, Accent.GPS, MenuAction.OpenList(ListType.GEOFENCES)),
+                    MenuItem("Geofence List", "geofence list", Icons.AutoMirrored.Filled.FormatListBulleted, Accent.GPS,
+                        MenuAction.Send(FirmwareCommands.geofenceList())),
+                    MenuItem("Set Geofence Slot 1", "geofence set 1 <lat> <lon> <mi> \"<name>\"", Icons.Filled.MyLocation, Accent.GPS,
+                        MenuAction.Arg(
+                            "${FirmwareCommands.GEOFENCE} set 1",
+                            "latitude, longitude, radius in miles, then a quoted name",
+                            "55.7522 37.6156 0.25 \"home\"",
+                        )),
+                    MenuItem("Clear Geofence", "geofence clear <1-5>", Icons.Filled.Delete, Accent.GPS,
+                        MenuAction.Arg("${FirmwareCommands.GEOFENCE} clear", "slot number 1-5", "1")),
+                    MenuItem("GPS Fix Info", "gps -g <what>", Icons.Filled.Satellite, Accent.GPS,
+                        MenuAction.Arg("${FirmwareCommands.GPS} -g", "fix | sat | lon | lat | alt | date | accuracy | text | nmea", "sat"),
+                        requiresCaps = setOf("gps")),
+                    MenuItem("GPS Constellations", "gps -n <system>", Icons.Filled.GpsFixed, Accent.GPS,
+                        MenuAction.Arg("${FirmwareCommands.GPS} -n", "native | all | gps | glonass | galileo | navic | qzss | beidou", "all"),
+                        requiresCaps = setOf("gps")),
                 ),
             ),
         )
@@ -380,7 +567,30 @@ object Catalog {
                 listOf(
                     MenuItem("Device Info", "jsoninfo", Icons.Filled.Info, Accent.DEVICE, MenuAction.Send("jsoninfo")),
                     MenuItem("Status", "jsonstatus", Icons.Filled.Analytics, Accent.DEVICE, MenuAction.Send("jsonstatus")),
-                    MenuItem("Settings", "settings", Icons.Filled.Settings, Accent.DEVICE, MenuAction.Send("settings")),
+                    MenuItem("Firmware Protocol", "protocolinfo · what this board answers", Icons.Filled.Code, Accent.DEVICE,
+                        MenuAction.Send(FirmwareCommands.protocolInfo())),
+                    MenuItem("Board Settings", "settings · change the board's own switches", Icons.Filled.Settings, Accent.DEVICE,
+                        MenuAction.OpenBoardSettings),
+                    MenuItem("Settings Dump", "settings", Icons.Filled.Settings, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.settingsDump())),
+                    MenuItem("Device Info Dump", "info", Icons.Filled.Info, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.deviceInfo())),
+                    MenuItem("Firmware Help", "help · the device's own command list", Icons.Filled.Terminal, Accent.NEUTRAL,
+                        MenuAction.Send(FirmwareCommands.helpText())),
+                    MenuItem("Set Channel", "channel -s <1-14>", Icons.Filled.Tune, Accent.NEUTRAL,
+                        MenuAction.Arg("${FirmwareCommands.CHANNEL} -s", "channel number 1-14", "6")),
+                    MenuItem("Set Brightness", "brightness -s <0-9>", Icons.Filled.BrightnessMedium, Accent.NEUTRAL,
+                        MenuAction.Arg("${FirmwareCommands.BRIGHTNESS} -s", "level 0-9", "5")),
+                    MenuItem("List A Directory", "ls <directory>", Icons.Filled.FolderOpen, Accent.DEVICE,
+                        MenuAction.Arg(FirmwareCommands.LS, "directory on the board", "/spiffs"), requiresCaps = setOf("sd")),
+                    MenuItem("Upload Wardrives", "upload -d <wdg|wigle|both>", Icons.Filled.SystemUpdate, Accent.GPS,
+                        MenuAction.Arg("${FirmwareCommands.UPLOAD} -d", "wdg | wigle | both", "wigle")),
+                    MenuItem("Backup SPIFFS To SD", "backupspiffs", Icons.Filled.Folder, Accent.DEVICE,
+                        MenuAction.Send(FirmwareCommands.backupSpiffs()), requiresCaps = setOf("sd")),
+                    MenuItem("Backup Status", "backupstatus", Icons.Filled.FolderOpen, Accent.DEVICE,
+                        MenuAction.Send(FirmwareCommands.backupStatus()), requiresCaps = setOf("sd")),
+                    MenuItem("Restore SPIFFS From SD", "restorespiffs", Icons.Filled.RestartAlt, Accent.DEVICE,
+                        MenuAction.Send(FirmwareCommands.restoreSpiffs()), dangerous = true, requiresCaps = setOf("sd")),
                     MenuItem("Channel", "channel", Icons.Filled.Tune, Accent.DEVICE, MenuAction.Send("channel")),
                     MenuItem("Brightness Cycle", "brightness -c", Icons.Filled.BrightnessMedium, Accent.DEVICE, MenuAction.Send("brightness -c")),
                     MenuItem("LED Rainbow", "led -p rainbow", Icons.Filled.Palette, Accent.DEVICE, MenuAction.Send("led -p rainbow")),

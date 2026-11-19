@@ -85,10 +85,10 @@ object TargetLock {
             val commands = ArrayList<String>(1 + pinsByName.size)
             // Needs `-a` to be present for the firmware to reach the filter branch;
             // its value is ignored there, so 0 is never used as an index.
-            commands += "select -a 0 -f $filter"
+            commands += FirmwareCommands.selectByFilter(filter)
             // The filter selects every AP with this name; toggle the others off by the
             // slot they occupy in the snapshot this plan was built from.
-            pinsByName.forEach { commands += "select -a ${it.index}" }
+            pinsByName.forEach { commands += FirmwareCommands.toggleAp(it.index) }
             return Plan(commands, byEssid = true, duplicates = duplicates)
         }
 
@@ -100,8 +100,8 @@ object TargetLock {
             else -> "its SSID cannot be quoted safely for the firmware"
         }
         val commands = ArrayList<String>(1 + othersSelected.size)
-        if (!target.selected) commands += "select -a ${target.index}"
-        othersSelected.forEach { commands += "select -a ${it.index}" }
+        if (!target.selected) commands += FirmwareCommands.toggleAp(target.index)
+        othersSelected.forEach { commands += FirmwareCommands.toggleAp(it.index) }
         // An empty command list means the board already has exactly this AP selected;
         // the caller still verifies that before anything is transmitted.
         return Plan(commands, byEssid = false, duplicates = duplicates, fallbackReason = reason)
@@ -122,7 +122,7 @@ object TargetLock {
     fun clearPlan(list: List<ApPin>): List<String> {
         val slots = list.filter { it.selected }.map { it.index }
         if (slots.isEmpty()) return emptyList()
-        return listOf("select -a ${slots.joinToString(",")}")
+        return listOf(FirmwareCommands.selectApSlots(slots))
     }
 
     /** BSSIDs still selected in [list]; empty means the board really is unselected. */
