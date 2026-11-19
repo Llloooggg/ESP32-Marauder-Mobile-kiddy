@@ -31,3 +31,16 @@ captures/
 
 # Static-analysis cache (Snyk / DeepCode)
 .dccache
+
+# Captured data of real networks must never be committed: a pcap of someone's
+# airtime is other people's traffic, and a recovered password is a credential.
+# Only the synthetic fixtures the tests build from hex literals belong in git —
+# they carry no real traffic and no real credential.
+*.pcap
+*.pcapng
+*.22000
+*.22000.txt
+handshakes/
+cracked/
+passwords*.txt
+secret*.txt

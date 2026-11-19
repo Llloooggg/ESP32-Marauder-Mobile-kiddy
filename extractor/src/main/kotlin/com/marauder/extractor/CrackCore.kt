@@ -44,9 +44,7 @@ class WpaTarget internal constructor(
     val keyver: Int,
     private val pmkSalt: ByteArray,
     private val pmkidData: ByteArray?,         // type 1: "PMK Name"+AA+SPA
-    private val pke100: ByteArray?,            // type 2: hashcat aux1/aux2 expansion
-    private val pke102: ByteArray?,            // type 2: hashcat aux3 (KDF-256 style)
-    private val pkeStd: ByteArray?,            // type 2: 802.11 PRF-384 (counter first)
+    private val pkeSets: Array<PkeSet>?,       // type 2: one per plausible SNonce placement
     private val micMsgs: Array<ByteArray>?,    // type 2: candidate MIC messages
     private val expected: ByteArray,           // 16B PMKID or Key MIC
 ) {
@@ -66,18 +64,106 @@ class WpaTarget internal constructor(
         if (kind == HashKind.PMKID) {
             return Arrays.equals(WpaCrypto.hmac("HmacSHA1", pmk, pmkidData!!), 0, 16, expected, 0, 16)
         }
-        val kde100 = WpaCrypto.hmac("HmacSHA1", pmk, pke100!!).copyOfRange(0, 16)
-        val kde100md5 = WpaCrypto.hmac("HmacMD5", pmk, pke100).copyOfRange(0, 16) // legacy WPA1 KCK
-        val kde102 = WpaCrypto.hmac("HmacSHA256", pmk, pke102!!).copyOfRange(0, 16)
-        val kckStd = WpaCrypto.hmac("HmacSHA1", pmk, pkeStd!!).copyOfRange(0, 16) // 802.11 PRF-384 KCK
-        for (msg in micMsgs!!) {
-            if (Arrays.equals(WpaCrypto.hmac("HmacMD5", kde100, msg), 0, 16, expected, 0, 16)) return true
-            if (Arrays.equals(WpaCrypto.hmac("HmacSHA1", kde100, msg), 0, 16, expected, 0, 16)) return true
-            if (Arrays.equals(WpaCrypto.aesCmac(kde102, msg), 0, 16, expected, 0, 16)) return true
-            if (Arrays.equals(WpaCrypto.aesCmac(kckStd, msg), 0, 16, expected, 0, 16)) return true
-            if (Arrays.equals(WpaCrypto.hmac("HmacMD5", kde100md5, msg), 0, 16, expected, 0, 16)) return true
+        for (pk in pkeSets!!) {
+            val kde100 = WpaCrypto.hmac("HmacSHA1", pmk, pk.p100).copyOfRange(0, 16)
+            val kde100md5 = WpaCrypto.hmac("HmacMD5", pmk, pk.p100).copyOfRange(0, 16) // legacy WPA1 KCK
+            val kde102 = WpaCrypto.hmac("HmacSHA256", pmk, pk.p102).copyOfRange(0, 16)
+            val kckStd = WpaCrypto.hmac("HmacSHA1", pmk, pk.pstd).copyOfRange(0, 16) // 802.11 PRF-384 KCK
+            for (msg in micMsgs!!) {
+                if (Arrays.equals(WpaCrypto.hmac("HmacMD5", kde100, msg), 0, 16, expected, 0, 16)) return true
+                if (Arrays.equals(WpaCrypto.hmac("HmacSHA1", kde100, msg), 0, 16, expected, 0, 16)) return true
+                if (Arrays.equals(WpaCrypto.aesCmac(kde102, msg), 0, 16, expected, 0, 16)) return true
+                if (Arrays.equals(WpaCrypto.aesCmac(kckStd, msg), 0, 16, expected, 0, 16)) return true
+                if (Arrays.equals(WpaCrypto.hmac("HmacMD5", kde100md5, msg), 0, 16, expected, 0, 16)) return true
+            }
         }
         return false
+    }
+
+    /**
+     * The target's password-independent material, handed to the native engines
+     * verbatim. This exists so the app's parser is the only place a 22000 line is
+     * interpreted: the native side gets the same pre-computed buffers Kotlin's
+     * [verifyWithPmk] uses, and both must agree for a candidate to be reported.
+     *
+     * It carries the FIRST [PkeSet] — the nonce layout the blob's own bytes point at.
+     * A line whose SNonce lives in the other layout is still cracked here, by the
+     * remaining candidate; the native engine would report "not found" for it, and the
+     * caller falls back to this implementation rather than reporting a wrong answer.
+     * (Feeding every candidate to the native engines is a transport change: the TLV
+     * needs one pke set per candidate.)
+     */
+    fun material(): TargetMaterial {
+        val primary = pkeSets?.firstOrNull()
+        return TargetMaterial(
+            kind = if (kind == HashKind.PMKID) 1 else 2,
+            keyver = keyver,
+            salt = pmkSalt,
+            expected = expected,
+            pmkidData = pmkidData ?: ByteArray(0),
+            pke100 = primary?.p100 ?: ByteArray(0),
+            pke102 = primary?.p102 ?: ByteArray(0),
+            pkeStd = primary?.pstd ?: ByteArray(0),
+            micMsgs = micMsgs?.toList() ?: emptyList(),
+        )
+    }
+}
+
+/**
+ * One set of pairwise-key-expansion buffers, built for one placement of the
+ * supplicant nonce (SNonce) inside the stored EAPOL blob.
+ */
+internal class PkeSet(val p100: ByteArray, val p102: ByteArray, val pstd: ByteArray)
+
+/** One target's pre-computed verification buffers, in transport form. */
+data class TargetMaterial(
+    val kind: Int,                  // 1 = PMKID (WPA*01), 2 = handshake (WPA*02)
+    val keyver: Int,
+    val salt: ByteArray,            // PBKDF2 salt == raw SSID
+    val expected: ByteArray,        // 16 bytes: PMKID or Key MIC
+    val pmkidData: ByteArray,
+    val pke100: ByteArray,
+    val pke102: ByteArray,
+    val pkeStd: ByteArray,
+    val micMsgs: List<ByteArray>,
+)
+
+/**
+ * Serialises a session's targets for the native engines, in the exact layout
+ * `app/src/main/cpp/wpa_crypto.cpp:parse_material` reads (magic, version, count,
+ * then per target: kind/keyver bytes, big-endian length-prefixed buffers).
+ */
+object Material {
+
+    const val MAGIC = "MKMT"
+    const val VERSION = 1
+
+    fun write(targets: List<TargetMaterial>): ByteArray {
+        require(targets.isNotEmpty()) { "no targets to serialise" }
+        val out = java.io.ByteArrayOutputStream(4096)
+        fun u32(v: Int) {
+            out.write((v ushr 24) and 0xFF); out.write((v ushr 16) and 0xFF)
+            out.write((v ushr 8) and 0xFF); out.write(v and 0xFF)
+        }
+        fun vec(b: ByteArray) { u32(b.size); out.write(b) }
+
+        out.write(MAGIC.toByteArray(Charsets.ISO_8859_1))
+        u32(VERSION)
+        u32(targets.size)
+        for (t in targets) {
+            require(t.expected.size == 16) { "expected tag must be 16 bytes, got ${t.expected.size}" }
+            out.write(t.kind and 0xFF)
+            out.write(t.keyver and 0xFF)
+            vec(t.salt)
+            out.write(t.expected)
+            vec(t.pmkidData)
+            vec(t.pke100)
+            vec(t.pke102)
+            vec(t.pkeStd)
+            u32(t.micMsgs.size)
+            t.micMsgs.forEach { vec(it) }
+        }
+        return out.toByteArray()
     }
 }
 
@@ -98,7 +184,7 @@ object CrackCore {
                     val essid = unhexLenient(p[5]) ?: return null
                     if (essid.isEmpty()) return null
                     val pmkidData = "PMK Name".toByteArray(Charsets.ISO_8859_1) + aa + spa
-                    WpaTarget(HashKind.PMKID, essid, 0, essid, pmkidData, null, null, null, null, pmkid)
+                    WpaTarget(HashKind.PMKID, essid, 0, essid, pmkidData, null, null, pmkid)
                 }
                 "02" -> {
                     if (p.size < 9) return null
@@ -112,16 +198,20 @@ object CrackCore {
                     if (eapol.size < 99) return null // auth_packet minimum
                     val keyver = be16(eapol, 5) and 0x0003
                     if (keyver !in 1..3) return null // module rejects keyver 0 / >3
-                    val snonce = eapol.copyOfRange(17, 49)
+                    val snonceAt = snonceCandidates(eapol)
                     val raw = eapol
                     val swap = wordSwapped(raw)
                     val padded = raw.copyOf(raw.size + 1).also { it[raw.size] = 0x80.toByte() }
                     val paddedSwap = swap.copyOf(swap.size + 1).also { it[swap.size] = 0x80.toByte() }
                     WpaTarget(
                         HashKind.HANDSHAKE, essid, keyver, essid, null,
-                        pke100(aa, spa, anonce, snonce),
-                        pke102(aa, spa, anonce, snonce),
-                        pkeStd(aa, spa, anonce, snonce),
+                        snonceAt.map { sn ->
+                            PkeSet(
+                                pke100(aa, spa, anonce, sn),
+                                pke102(aa, spa, anonce, sn),
+                                pkeStd(aa, spa, anonce, sn),
+                            )
+                        }.toTypedArray(),
                         arrayOf(raw, swap, padded, paddedSwap),
                         mic,
                     )
@@ -130,6 +220,36 @@ object CrackCore {
             }
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * Where the supplicant nonce (SNonce) sits inside the stored EAPOL blob, most
+     * likely placement first. Two layouts occur, and they are not compatible:
+     *
+     *  * the frame as it appears on air — the standard's KEY NONCE field at 49..81,
+     *    with Key IV/RSC/ID at 17..49 (that region is zero on CCMP handshakes). This
+     *    is what this app's own extractor stores, and these offsets were confirmed
+     *    byte by byte against a live access point's EAPOL frames;
+     *  * the form hashcat's own example 22000 line carries — SNonce at 17..49 and
+     *    zeros at 49..81. Checked independently of this code: recomputing that
+     *    line's MIC with the SNonce from 49..81 does not reproduce its MIC, while
+     *    17..49 reproduces it exactly.
+     *
+     * Guessing wrong does not produce a wrong answer, it produces no answer: the MIC
+     * never matches, the password really is right, and nothing explains the miss. So
+     * every plausible placement is verified, and the blob's own bytes only decide
+     * which one is tried first.
+     */
+    private fun snonceCandidates(eapol: ByteArray): List<ByteArray> {
+        val atNonceField = eapol.copyOfRange(49, 81)
+        val atIvField = eapol.copyOfRange(17, 49)
+        val ivEmpty = atIvField.all { it == 0.toByte() }
+        val nonceEmpty = atNonceField.all { it == 0.toByte() }
+        return when {
+            ivEmpty && !nonceEmpty -> listOf(atNonceField)               // raw capture
+            nonceEmpty && !ivEmpty -> listOf(atIvField)                  // hashcat example form
+            else -> listOf(atNonceField, atIvField)                      // both possible: standard first
         }
     }
 

@@ -133,7 +133,17 @@ object Extractor {
                     val ack = (keyInfo and 0x0080) != 0
                     val mic = (keyInfo and 0x0100) != 0
                     val keyver = keyInfo and 0x0007
-                    val nonce = eapol.copyOfRange(17, 49)
+                    // EAPOL-Key descriptor layout (IEEE 802.11, WPA descriptor type 2),
+                    // offsets from the EAPOL header start:
+                    //   0 ver, 1 type, 2-3 body length, 4 descriptor type, 5-6 key info,
+                    //   7-8 key length, 9-16 replay, 17-32 key IV, 33-40 key RSC,
+                    //   41-48 key ID, 49-80 KEY NONCE, 81-96 key MIC, 97-98 key data len.
+                    // The nonce is NOT at 17: that region is the key IV (random, so it
+                    // looked plausible) plus RSC/ID. Reading it there produced 22000 lines
+                    // carrying an IV instead of the ANonce — such a line can never crack,
+                    // no matter the password. Real captures proved this; the synthetic
+                    // fixtures had been laying the nonce out where the code read it.
+                    val nonce = eapol.copyOfRange(49, 81)
                     val replay = be64(eapol, 9)
                     val keyDataLen = be16(eapol, 97)
 
@@ -410,10 +420,16 @@ object Extractor {
             if (i + 2 + len > b.size) break
             if (id == 48 && len >= 10) {
                 // ver(2) group cipher(4) pairwise count(2) [suites] akm count(2) [suites]
+                //
+                // The version and both counts are little-endian (802.11 element bodies),
+                // while the suite selectors themselves are OUI-then-selector as written.
+                // Reading the counts big-endian turns a list of 1 into 256 and every real
+                // RSN element then looks truncated — which is exactly how a WPA3
+                // transition network silently degraded to "key management unknown".
                 var at = i + 2 + 2 + 4
-                val pairwise = be16(b, at); at += 2 + pairwise * 4
+                val pairwise = le16(b, at); at += 2 + pairwise * 4
                 if (at + 2 > i + 2 + len) { stats.rsnTruncated++; return emptySet() }
-                val akms = be16(b, at); at += 2
+                val akms = le16(b, at); at += 2
                 if (at + akms * 4 > i + 2 + len) { stats.rsnTruncated++; return emptySet() }
                 val out = LinkedHashSet<Int>(akms)
                 for (k in 0 until akms) {

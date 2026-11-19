@@ -42,6 +42,69 @@ class CrackCoreTest {
         assertTrue(!t.verify("Hashcat!"))
     }
 
+    /**
+     * The same handshake as the example above, in the layout the air really uses:
+     * the supplicant nonce in the standard's KEY NONCE field (49..81) and the Key
+     * IV/RSC/ID region (17..49) left empty — which is what this app's own extractor
+     * writes, and what a live access point's frames were confirmed to look like.
+     *
+     * The MIC is recomputed for the rewritten frame with the JDK's own PBKDF2/HMAC,
+     * independently of the code under test, so this pins the nonce placement rather
+     * than agreeing with the implementation being checked.
+     */
+    @Test
+    fun airLayoutHandshakeLineCracksToo() {
+        val p = handshakeLine.split("*")
+        val stored = unhex(p[7])
+        val snonce = stored.copyOfRange(17, 49)
+        val air = stored.copyOf().also { f ->
+            java.util.Arrays.fill(f, 17, 49, 0)
+            System.arraycopy(snonce, 0, f, 49, 32)
+        }
+
+        val essid = unhex(p[5])
+        val pmk = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1")
+            .generateSecret(javax.crypto.spec.PBEKeySpec("hashcat!".toCharArray(), essid, 4096, 256)).encoded
+        val pke = ByteArray(100)
+        System.arraycopy("Pairwise key expansion\u0000".toByteArray(Charsets.ISO_8859_1), 0, pke, 0, 23)
+        val (macLow, macHigh) = ordered(unhex(p[3]), unhex(p[4]))
+        val (nonLow, nonHigh) = ordered(unhex(p[6]), snonce)
+        System.arraycopy(macLow, 0, pke, 23, 6)
+        System.arraycopy(macHigh, 0, pke, 29, 6)
+        System.arraycopy(nonLow, 0, pke, 35, 32)
+        System.arraycopy(nonHigh, 0, pke, 67, 32)
+        val kck = javax.crypto.Mac.getInstance("HmacSHA1").apply {
+            init(javax.crypto.spec.SecretKeySpec(pmk, "HmacSHA1"))
+        }.doFinal(pke).copyOfRange(0, 16)
+        val mic = javax.crypto.Mac.getInstance("HmacSHA1").apply {
+            init(javax.crypto.spec.SecretKeySpec(kck, "HmacSHA1"))
+        }.doFinal(air).copyOfRange(0, 16)
+
+        val line = "WPA*02*" + hex(mic) + "*" + p[3] + "*" + p[4] + "*" + p[5] + "*" + p[6] + "*" + hex(air) + "*a2"
+        val t = CrackCore.parse(line)
+        assertNotNull(t)
+        assertTrue("the SNonce in the standard's field must verify", t!!.verify("hashcat!"))
+        assertTrue(!t.verify("hashcat1"))
+    }
+
+    private fun ordered(a: ByteArray, b: ByteArray): Pair<ByteArray, ByteArray> =
+        if (compare(a, b) <= 0) Pair(a, b) else Pair(b, a)
+
+    private fun compare(a: ByteArray, b: ByteArray): Int {
+        for (i in 0 until minOf(a.size, b.size)) {
+            val d = (a[i].toInt() and 0xFF) - (b[i].toInt() and 0xFF)
+            if (d != 0) return d
+        }
+        return a.size - b.size
+    }
+
+    private fun unhex(s: String): ByteArray {
+        require(s.length % 2 == 0)
+        return ByteArray(s.length / 2) { ((Character.digit(s[it * 2], 16) shl 4) or Character.digit(s[it * 2 + 1], 16)).toByte() }
+    }
+
+    private fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
+
     @Test
     fun malformedLinesAreRejectedNotThrown() {
         assertNull(CrackCore.parse(""))
