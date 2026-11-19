@@ -49,7 +49,7 @@ data class ReportResult(val markdown: String, val archive: File, val entries: In
 object ReportBuilder {
 
     /** Name this build writes into its own artifacts (GPX, CSV, reports). */
-    const val APP_LABEL = "Marauder Kiddy"
+    const val APP_LABEL = "Marauder Mobile Kiddy"
 
     /** Render the human-readable report. */
     fun markdown(input: ReportInput): String = buildString {

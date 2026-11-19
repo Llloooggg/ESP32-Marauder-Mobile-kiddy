@@ -15,13 +15,13 @@ by **Mohammed Ali** · GitHub [@0xsys](https://github.com/0xsys)
 
 ## About this build (`kiddy`)
 
-This is the **`ESP32-Marauder-Mobile-kiddy`** build: a working branch on top of
-Marauder Mobile, named after its repository. It installs **alongside** the
-upstream app — the launcher entry is **Marauder Kiddy**, the installed id is
-`com.marauder.mobile.kiddy` (the Kotlin code namespace stays
-`com.marauder.mobile`). Each install keeps its own private data directory, so
-captures and wordlists do not mix; move files between them with **Share** /
-**Export copy** in the Library.
+This is **Marauder Mobile Kiddy** — the **`ESP32-Marauder-Mobile-kiddy`** build: a
+working branch on top of Marauder Mobile, named after its repository. It installs
+**alongside** the upstream app — the launcher entry is **Marauder Mobile Kiddy**
+(truncated by some launchers), the installed id is `com.marauder.mobile.kiddy`
+(the Kotlin code namespace stays `com.marauder.mobile`). Each install keeps its
+own private data directory, so captures and wordlists do not mix; move files
+between them with **Share** / **Export copy** in the Library.
 
 What this build adds over upstream: a capture **library** (pcap / gpx / log /
 csv on the phone), a **pcap → hashcat-22000 extractor** (PMKID + handshake

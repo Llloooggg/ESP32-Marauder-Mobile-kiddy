@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
@@ -61,6 +62,7 @@ fun MenuScreen(
     onBack: () -> Unit,
     onOpenConsole: () -> Unit,
     onOpenAbout: () -> Unit,
+    onOpenSettings: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
     val screen = Catalog.screen(screenId) ?: Catalog.screen(Catalog.ROOT)!!
@@ -102,6 +104,9 @@ fun MenuScreen(
                                 if (darkTheme) Icons.Filled.LightMode else Icons.Filled.DarkMode,
                                 contentDescription = if (darkTheme) "Switch to light theme" else "Switch to dark theme",
                             )
+                        }
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(Icons.Outlined.Settings, contentDescription = "Settings")
                         }
                         IconButton(onClick = onOpenAbout) {
                             Icon(Icons.Outlined.Info, contentDescription = "About")

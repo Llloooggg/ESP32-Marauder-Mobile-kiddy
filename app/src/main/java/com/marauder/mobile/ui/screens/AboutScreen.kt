@@ -92,7 +92,8 @@ fun AboutScreen(onBack: () -> Unit, onShowTerms: () -> Unit = {}) {
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    "KIDDY",
+                    // Stacked, this reads as the full name: Marauder Mobile Kiddy.
+                    "MOBILE KIDDY",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 6.sp,

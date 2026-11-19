@@ -68,6 +68,11 @@ class UsbSerialManager(context: Context) {
     val captureFrames: SharedFlow<CaptureFrame> = _captureFrames.asSharedFlow()
 
     private var port: UsbSerialPort? = null
+
+    /** Line rate the port is opened at. `jsonbaud` can move it mid-session. */
+    @Volatile
+    var baud: Int = BAUD
+        private set
     private var ioManager: SerialInputOutputManager? = null
 
     // Single point that separates text lines from binary capture frames. Only the
@@ -169,6 +174,7 @@ class UsbSerialManager(context: Context) {
                 val p = driver.ports.first()
                 p.open(connection)
                 p.setParameters(BAUD, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
+                baud = BAUD
                 // Assert both lines together: the ESP32 auto-reset circuit only
                 // resets on a DTR/RTS mismatch, and native USB-CDC needs DTR set.
                 runCatching { p.setDTR(true) }
@@ -209,6 +215,7 @@ class UsbSerialManager(context: Context) {
      */
     fun setBaud(rate: Int) {
         runCatching { port?.setParameters(rate, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE) }
+            .onSuccess { baud = rate }
     }
 
     // Serializes every write to the port. Without it a background poll

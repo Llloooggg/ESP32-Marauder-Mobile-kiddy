@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PermScanWifi
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SystemUpdate
@@ -99,6 +100,7 @@ fun HomeScreen(
     onOpenConsole: () -> Unit,
     onOpenFlash: () -> Unit,
     onOpenAbout: () -> Unit,
+    onOpenSettings: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
     val connStatus by vm.status.collectAsState()
@@ -119,13 +121,20 @@ fun HomeScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Marauder") },
+                title = { Text("Marauder Mobile Kiddy") },
                 actions = {
                     IconButton(onClick = { vm.toggleTheme() }) {
                         Icon(
                             if (darkTheme) Icons.Filled.LightMode else Icons.Filled.DarkMode,
                             contentDescription = "Theme",
                             tint = MarauderCyan,
+                        )
+                    }
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(
+                            Icons.Filled.Settings,
+                            contentDescription = "Settings",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     IconButton(onClick = onOpenAbout) {

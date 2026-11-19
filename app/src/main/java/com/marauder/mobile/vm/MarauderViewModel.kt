@@ -115,6 +115,83 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { settings.setDarkTheme(!darkTheme.value) }
     }
 
+    // --- App settings: Lab gate, auto-analysis, serial line rate --------------
+
+    /** High-impact operations get their own Home section when this is on. */
+    val labMode: StateFlow<Boolean> =
+        settings.labMode.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** Extract hashes the moment a capture closes. */
+    val autoAnalyze: StateFlow<Boolean> =
+        settings.autoAnalyze.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    private val _lineRate = MutableStateFlow(0)
+
+    /** Line rate the user wants (`0` = leave the board at its 115200 default). */
+    val lineRate: StateFlow<Int> = _lineRate.asStateFlow()
+
+    private val _activeLineRate = MutableStateFlow(0)
+
+    /** Rate the serial link actually runs at right now (0 = not known yet). */
+    val activeLineRate: StateFlow<Int> = _activeLineRate.asStateFlow()
+
+    fun setLabMode(enabled: Boolean) {
+        viewModelScope.launch { settings.setLabMode(enabled) }
+    }
+
+    fun setAutoAnalyze(enabled: Boolean) {
+        viewModelScope.launch { settings.setAutoAnalyze(enabled) }
+    }
+
+    /** Rate the board is believed to be at; the app's own default on connect. */
+    private var pendingBaud: Int? = null
+    private var baudTimeout: Job? = null
+
+    /**
+     * Ask the board to change the USB-serial line rate (`jsonbaud <rate>`), and
+     * remember the choice. The firmware answers `{"t":"baud"}` at the OLD rate and
+     * switches immediately after it, so the acknowledgement is the whole basis of
+     * trust: no ack means we keep listening where we were and say so instead of
+     * pretending the link got faster. A CH340 bridge that cannot sustain the rate
+     * shows up exactly like that — and unplugging/replugging the board brings it
+     * back to 115200.
+     */
+    fun setLineRate(rate: Int) {
+        viewModelScope.launch { settings.setLineRate(rate) }
+        _lineRate.value = rate
+        applyLineRate(rate)
+    }
+
+    /** Re-apply the stored line rate (used after a capture negotiation or reconnect). */
+    fun applyStoredLineRate() {
+        if (_lineRate.value > 0) applyLineRate(_lineRate.value)
+    }
+
+    private fun applyLineRate(rate: Int) {
+        baudTimeout?.cancel()
+        val target = if (rate > 0) rate else DEFAULT_LINE_RATE
+        if (target == _activeLineRate.value) return
+        pendingBaud = target
+        usb.send("jsonbaud $target")
+        baudTimeout = viewModelScope.launch {
+            delay(BAUD_ACK_TIMEOUT_MS)
+            if (pendingBaud == target) {
+                pendingBaud = null
+                _snackbar.tryEmit(
+                    "The board never confirmed $target baud — staying at " +
+                        "${_activeLineRate.value.ifZero(DEFAULT_LINE_RATE)}. If the console turned to garbage, " +
+                        "unplug and replug the board: it always boots at 115200.",
+                )
+                appendConsole(
+                    "jsonbaud $target not confirmed — keeping ${_activeLineRate.value.ifZero(DEFAULT_LINE_RATE)}",
+                    LineKind.ERROR,
+                )
+            }
+        }
+    }
+
+    private fun Int.ifZero(fallback: Int): Int = if (this == 0) fallback else this
+
     // --- Authorised-use notice (asked once, re-shown from About) --------------
     private val _termsAccepted = MutableStateFlow(false)
     val termsAccepted: StateFlow<Boolean> = _termsAccepted.asStateFlow()
@@ -124,6 +201,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
 
     init {
         viewModelScope.launch { settings.termsAccepted.collect { _termsAccepted.value = it } }
+        viewModelScope.launch { settings.lineRate.collect { _lineRate.value = it } }
     }
 
     /** First board contact asks for acceptance; About can bring the notice back. */
@@ -601,6 +679,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
      * records the link dropped) are part of the message.
      */
     private fun autoAnalyzeCapture(name: String) {
+        if (!autoAnalyze.value) return
         val live = synchronized(essidsSeen) { HashMap(essidsSeen) }
         viewModelScope.launch(Dispatchers.IO) {
             val r = runCatching { artifacts.analyze(name, live) }.getOrNull() ?: return@launch
@@ -737,6 +816,9 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         artifacts.store.get(name)?.record?.hashState ?: ArtifactRecord.HASH_NONE
 
     fun artifactFile(name: String): java.io.File? = artifacts.store.get(name)?.file
+
+    /** Where the library (captures, journals, reports, wordlists) lives on this phone. */
+    fun artifactsFolder(): String = runCatching { artifacts.store.directory.absolutePath }.getOrDefault("?")
 
     // --- Wordlists -------------------------------------------------------------
 
@@ -911,18 +993,26 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
 
     /** On the first proto ≥ 2 handshake, enable saving to serial.
      *
-     *  We deliberately DO NOT raise the line rate. Raising to a high baud proved
-     *  unreliable on the common CH340 USB-UART bridge: the device switches fine but
-     *  the bridge can't sustain the rate, corrupting the link — and once the device
-     *  is at the bad rate there is no way to command it back (a reconnect just
-     *  re-raises into garbage). 115200 is rock-solid and handles portal uploads and
-     *  header/handshake capture; a verified high-speed path can come back later. */
+     *  The line rate is opt-in from Settings, never silently raised: on the common
+     *  CH340 USB-UART bridge a high rate is unreliable — the device switches fine
+     *  but the bridge cannot sustain it, corrupting the link, and the device then
+     *  speaks a rate the phone is not listening at until it is reset. So the app
+     *  only applies a rate the user chose, waits for the board's `{"t":"baud"}`
+     *  confirmation (sent at the OLD rate) before matching it, and reports plainly
+     *  when that confirmation never arrives. Replugging the board always returns it
+     *  to 115200. */
     private fun negotiateCapture(info: DeviceMessage.Info) {
         captureCapable = info.proto >= 2 || info.has("capstream")
+        _activeLineRate.value = usb.baud
         if (!captureCapable || negotiated) return
         negotiated = true
         viewModelScope.launch {
             usb.send("settings -s SavePCAP enable")
+            // A capture needs bytes, and 115200 is ~11 KB/s — the board's own ring
+            // then sheds frames ({"t":"drop"}) and the pcap arrives with holes. The
+            // line rate is therefore a user setting: applied only when they raised
+            // it, and only trusted once the board confirms the switch.
+            applyStoredLineRate()
         }
     }
 
@@ -935,7 +1025,8 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             missedFrames = summary?.missedFrames ?: _capture.value.missedFrames,
         )
         summary?.let {
-            registerCapture(it, _activeMission.value)
+            val registered = registerCapture(it, _activeMission.value)
+            if (registered != null) autoAnalyzeCapture(registered)
             _snackbar.tryEmit("Capture saved: ${it.bytes} B → ${it.path}")
         }
     }
@@ -1205,6 +1296,12 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
                 // The device confirmed the new rate (sent at the OLD rate) and has
                 // switched; match it so the faster link is used from here on.
                 usb.setBaud(msg.rate)
+                _activeLineRate.value = msg.rate
+                if (pendingBaud == msg.rate) {
+                    pendingBaud = null
+                    baudTimeout?.cancel()
+                    _snackbar.tryEmit("Serial link is now ${msg.rate} baud")
+                }
                 appendConsole("Serial rate → ${msg.rate} baud", LineKind.SYSTEM)
             }
             is DeviceMessage.Drop -> {
@@ -1362,11 +1459,17 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     companion object {
         private const val MAX_CONSOLE = 800
         private const val MAX_SAMPLES = 120
-    private const val MAX_ESSIDS_SEEN = 64
+        private const val MAX_ESSIDS_SEEN = 64
+
+        /** What the board boots at; also what a replug always returns to. */
+        private const val DEFAULT_LINE_RATE = 115200
+
+        /** How long to wait for the firmware's `{"t":"baud"}` confirmation. */
+        private const val BAUD_ACK_TIMEOUT_MS = 3000L
 
         /** Free heap (bytes) below which a streaming capture is stopped early. */
         private const val LOW_HEAP_BYTES = 40_000L
 
-        private const val APP_RELEASE = "marauder-mobile"
+        private const val APP_RELEASE = "marauder-kiddy"
     }
 }

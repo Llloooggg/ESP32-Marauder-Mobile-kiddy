@@ -53,6 +53,7 @@ import com.marauder.mobile.ui.screens.HomeScreen
 import com.marauder.mobile.ui.screens.ListScreen
 import com.marauder.mobile.ui.screens.LiveActivityScreen
 import com.marauder.mobile.ui.screens.MenuScreen
+import com.marauder.mobile.ui.screens.SettingsScreen
 import com.marauder.mobile.ui.screens.MissionScreen
 import com.marauder.mobile.ui.screens.ScanScreen
 import com.marauder.mobile.ui.screens.WordlistsScreen
@@ -80,6 +81,7 @@ private object Routes {
     const val ANALYZER = "analyzer"
     const val LIVE = "live"
     const val ABOUT = "about"
+    const val SETTINGS = "settings"
     const val FLASH = "flash"
     const val EVIL_PORTAL = "evil_portal_screen"
 
@@ -164,6 +166,7 @@ fun AppRoot() {
                     onOpenConsole = { nav.navigate(Routes.CONSOLE) },
                     onOpenFlash = { nav.navigate(Routes.FLASH) },
                     onOpenAbout = { nav.navigate(Routes.ABOUT) },
+                    onOpenSettings = { nav.navigate(Routes.SETTINGS) },
                     onDisconnect = { vm.disconnect() },
                 )
             }
@@ -250,6 +253,7 @@ fun AppRoot() {
                     onBack = { nav.popBackStack() },
                     onOpenConsole = { nav.navigate(Routes.CONSOLE) },
                     onOpenAbout = { nav.navigate(Routes.ABOUT) },
+                    onOpenSettings = { nav.navigate(Routes.SETTINGS) },
                     onDisconnect = { vm.disconnect() },
                 )
             }
@@ -274,6 +278,15 @@ fun AppRoot() {
 
             composable(Routes.ABOUT) {
                 AboutScreen(onBack = { nav.popBackStack() }, onShowTerms = { vm.showTerms() })
+            }
+
+            composable(Routes.SETTINGS) {
+                SettingsScreen(
+                    vm = vm,
+                    onBack = { nav.popBackStack() },
+                    onOpenWordlists = { nav.navigate(Routes.WORDLISTS) },
+                    onOpenAbout = { nav.navigate(Routes.ABOUT) },
+                )
             }
 
             composable(Routes.FLASH) {
