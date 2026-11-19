@@ -52,21 +52,56 @@ data class AutoChoice(val backend: Backend, val why: String)
  * the choice is made. [usable] is the gate every GPU run has to pass: a device that fails its
  * known-answer test is not a slower calculator, it is a calculator with unknown output, and on a
  * cracker a wrong hash looks exactly like a password that is not in the list.
+ *
+ * The three ways a device can fail are kept apart on purpose, because the sentence the user needs is
+ * different for each: no Vulkan device at all ([absentReason], the loader's words), a device whose
+ * hashes disagree ([selfTestReason], the driver's words), and a driver that did not survive being
+ * asked ([driverDied]) — which is why the asking happens in a process this app can afford to lose.
  */
 data class GpuFacts(
     val present: Boolean,
     val deviceName: String?,
     val selfTestReason: String?,
+    val absentReason: String? = null,
+    val driverDied: String? = null,
 ) {
-    val usable: Boolean get() = present && selfTestReason == null
+    val usable: Boolean get() = present && selfTestReason == null && driverDied == null
 
     /** Why [usable] is false, in the driver's own words where it has any, or null when it is fine. */
     val gap: String?
         get() = when {
-            !present -> "no usable Vulkan device was found here"
+            driverDied != null -> "$driverDied; a driver that does not survive being asked a known " +
+                "answer cannot be trusted to produce correct PMKs, so this app will not run guesses on it"
+            !present -> "no usable Vulkan device was found here" +
+                (absentReason?.takeIf { it.isNotBlank() }?.let { ": $it" } ?: "")
             selfTestReason != null -> "$deviceName failed its known-answer test: $selfTestReason"
             else -> null
         }
+}
+
+/**
+ * The same facts, read off what the helper process reported. Separate from [GpuFacts] so the
+ * translation is a function that can be tested without a phone attached: what must never happen is a
+ * verdict about a driver turning into a claim this app cannot support.
+ */
+fun gpuFacts(verdict: ProbeVerdict): GpuFacts = when (verdict) {
+    is ProbeVerdict.Passed -> GpuFacts(present = true, deviceName = verdict.deviceName, selfTestReason = null)
+    is ProbeVerdict.Refused -> if (verdict.deviceName != null) {
+        GpuFacts(
+            present = true,
+            deviceName = verdict.deviceName,
+            selfTestReason = verdict.reason,
+        )
+    } else {
+        GpuFacts(present = false, deviceName = null, selfTestReason = null, absentReason = verdict.reason)
+    }
+
+    is ProbeVerdict.Died -> GpuFacts(
+        present = false,
+        deviceName = null,
+        selfTestReason = null,
+        driverDied = verdict.words,
+    )
 }
 
 /**

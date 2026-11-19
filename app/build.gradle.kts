@@ -38,8 +38,8 @@ android {
         // and the About line both print `versionName (versionCode)`, and a capture made last week
         // can only be re-read against the build that made it if that pair changed when behaviour did.
         // So: any build that changes behaviour gets a new versionCode.
-        versionCode = 9
-        versionName = "1.4.1-kiddy"
+        versionCode = 10
+        versionName = "1.4.2-kiddy"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -56,6 +56,14 @@ android {
     }
 
     buildTypes {
+        debug {
+            // A debug build installs BESIDE the release one instead of fighting it for the same
+            // package name. They are signed with different keys, so without this an on-device test
+            // would have to uninstall the release app — and with it the captures, wordlists and
+            // settings on a phone that is a field instrument, not a test bench.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
@@ -86,6 +94,8 @@ android {
     }
     buildFeatures {
         compose = true
+        // The GPU helper is reached over binder (src/main/aidl/IGpuCore.aidl).
+        aidl = true
         // The About screen and the report header print the real version instead of
         // a hardcoded string that goes stale every release.
         buildConfig = true

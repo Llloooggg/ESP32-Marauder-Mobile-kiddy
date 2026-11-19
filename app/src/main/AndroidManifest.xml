@@ -46,6 +46,15 @@
                 android:resource="@xml/device_filter" />
         </activity>
 
+        <!-- The one place this app touches the device's graphics driver, and it is deliberately not
+             in the app's own process: a vendor driver that crashes while being asked a known answer
+             takes down this process, and the app reports that in words and keeps working on the CPU.
+             See crack/GpuProbeService.kt and the AIDL that binds them. -->
+        <service
+            android:name=".crack.GpuProbeService"
+            android:process=":gpucore"
+            android:exported="false" />
+
         <!-- Shares captures (pcap/gpx/csv) out to other apps: the app's own files
              directory is private, so the URI has to come from a FileProvider. -->
         <provider

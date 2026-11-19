@@ -542,13 +542,28 @@ bool derive_pmks(const std::vector<mk::Candidate>& candidates, size_t from, size
         VkResult r = vkAllocateDescriptorSets(session.device, &dsai, &set);
         if (r != VK_SUCCESS) { err = std::string("vkAllocateDescriptorSets: ") + resultName(r); ok = false; break; }
 
-        VkDescriptorBufferInfo infos[5];
-        VkWriteDescriptorSet writes[5];
+        // Both arrays are value-initialized, and that is not style: `VkWriteDescriptorSet` has a
+        // `pNext` chain, and a driver is allowed to walk it. Left as raw stack memory, `pNext`
+        // holds whatever the last call put there - the Adreno driver on this phone (the compute
+        // device names itself "Adreno (TM) 725") does walk
+        // it, and dereferencing that garbage killed the process inside vkUpdateDescriptorSets:
+        //
+        //   signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x006d93715633ec78
+        //     #00 vulkan.adreno.so qglinternal::vkUpdateDescriptorSets(...)+696
+        //     #01 libmarauder_crypto.so mkgpu::derive_pmks(...)+3456
+        //     #02 libmarauder_crypto.so mkgpu::self_test(...)+472
+        //
+        // Every other Vulkan struct here is written as `X x{}` for the same reason. A host-side
+        // driver happened to ignore the field, so the host test could not have caught this:
+        // uninitialized memory is a coin flip, which is exactly why it must not exist.
+        VkDescriptorBufferInfo infos[5]{};
+        VkWriteDescriptorSet writes[5]{};
         for (int i = 0; i < 5; i++) {
             infos[i].buffer = deviceBuf[i].handle;
             infos[i].offset = 0;
             infos[i].range = deviceBuf[i].size;
             writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].pNext = nullptr;
             writes[i].dstSet = set;
             writes[i].dstBinding = static_cast<uint32_t>(i);
             writes[i].dstArrayElement = 0;

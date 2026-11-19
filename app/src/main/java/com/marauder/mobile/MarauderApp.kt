@@ -6,8 +6,11 @@ import com.marauder.mobile.crack.AutoChoice
 import com.marauder.mobile.crack.Backend
 import com.marauder.mobile.crack.CrackEngine
 import com.marauder.mobile.crack.GpuFacts
+import com.marauder.mobile.crack.GpuCoreClient
 import com.marauder.mobile.crack.JvmCrackEngine
+import com.marauder.mobile.crack.ProbeVerdict
 import com.marauder.mobile.crack.autoBackend
+import com.marauder.mobile.crack.gpuFacts as factsFromVerdict
 import com.marauder.mobile.crack.NativeCpuCrackEngine
 import com.marauder.mobile.crack.NativeCrypto
 import com.marauder.mobile.crack.NativeGpuCrackEngine
@@ -44,6 +47,15 @@ class MarauderApp : Application() {
         private set
 
     /**
+     * The app's only contact with this device's graphics driver. It is a binder to a second process
+     * (`:gpucore`), because the driver is somebody else's code and can die while being asked — and
+     * the app being alive to say so is the difference between a device the user can act on and a
+     * crash dialog. Nothing in this process calls Vulkan directly.
+     */
+    lateinit var gpuCore: GpuCoreClient
+        private set
+
+    /**
      * The cracker back ends available on this device, created once per kind.
      *
      * The native (NDK) CPU engine is used only when it loaded, agrees on the material
@@ -64,24 +76,25 @@ class MarauderApp : Application() {
             else -> if (cpuReason == null) "native CPU engine (known-answer self-test passed on this device)"
             else "JVM engine: $cpuReason"
         }
-        val gpu = when {
-            !NativeCrypto.available -> "unavailable: no native library"
-            !NativeCrypto.gpuPresent -> "unavailable: ${NativeCrypto.gpuUnavailableReason}"
-            NativeCrypto.gpuSelfTestPassed -> "ready: ${NativeCrypto.gpuDeviceName} (known-answer self-test passed)"
-            else -> "available: ${NativeCrypto.gpuDeviceName} — its known-answer test has not run yet on this driver"
+        val gpu = when (val asked = gpuCore.lastVerdict()) {
+            null -> "not asked yet: this app says nothing about the graphics cores of a device it has " +
+                "not asked, and asking it is what the first GPU run does"
+            is ProbeVerdict.Passed ->
+                "ready: ${asked.deviceName} (known-answer passed, asked in a separate process)"
+            is ProbeVerdict.Refused ->
+                "unusable: ${asked.reason}" + (asked.deviceName?.let { " [$it]" } ?: "")
+            is ProbeVerdict.Died -> "unusable: ${asked.words}"
         }
         return listOf("CPU: $cpu", "GPU: $gpu")
     }
 
     /**
-     * The graphics facts behind a backend choice, read from the driver. [NativeCrypto.gpuSelfTest]
-     * does real GPU work, so this must not run on the UI thread — [pickAuto] is called from a worker.
+     * The graphics facts behind a backend choice, read from this device's driver. The asking is real
+     * GPU work and it happens in the helper process, so this must not run on the UI thread —
+     * [pickAuto] is called from a worker. Whatever the answer is, it arrives as data: a driver that
+     * dies while being asked shows up as a [ProbeVerdict.Died], not as this process dying.
      */
-    fun gpuFacts(): GpuFacts = GpuFacts(
-        present = NativeCrypto.gpuPresent,
-        deviceName = NativeCrypto.gpuDeviceName.takeIf { it.isNotEmpty() },
-        selfTestReason = if (NativeCrypto.available && NativeCrypto.gpuPresent) NativeCrypto.gpuSelfTest() else null,
-    )
+    fun gpuFacts(): GpuFacts = factsFromVerdict(gpuCore.probe())
 
     /**
      * What `AUTO` runs on this device right now, and the sentence that says why. The graphics cores
@@ -106,7 +119,7 @@ class MarauderApp : Application() {
         // line above the button already says the GPU is unavailable. Handing back a
         // placeholder would hide the real reason behind a generic message.
         if (backend == Backend.GPU) {
-            if (NativeCrypto.available) NativeGpuCrackEngine() else JvmCrackEngine()
+            if (NativeCrypto.available) NativeGpuCrackEngine(gpuCore) else JvmCrackEngine()
         } else {
             if (NativeCrypto.available) NativeCpuCrackEngine() else JvmCrackEngine()
         }
@@ -114,6 +127,11 @@ class MarauderApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Android runs this class in every process of the app, the graphics helper included. That one
+        // needs none of what follows, and it is better off not holding a second USB manager, a second
+        // settings store and a second artifact index pointed at the same files.
+        if (isGpuHelperProcess()) return
+        gpuCore = GpuCoreClient(this)
         usb = UsbSerialManager(this)
         settings = SettingsRepository(this)
         captureSink = CaptureSink(this)
@@ -121,5 +139,24 @@ class MarauderApp : Application() {
         artifacts = ArtifactsRepository(this)
         wordlists = WordlistsRepository(this)
         artifacts.bridge = PcapExtractionBridge()
+    }
+
+    /**
+     * True in the graphics helper, whose process name is this package plus `:gpucore`. Read from
+     * `/proc/self/cmdline` rather than `Application.getProcessName()`, which only exists on API 28
+     * and this build supports 26.
+     */
+    private fun isGpuHelperProcess(): Boolean = try {
+        java.io.File("/proc/self/cmdline")
+            .readText()
+            .split('\u0000')
+            .firstOrNull()
+            .orEmpty()
+            .endsWith(":gpucore")
+    } catch (t: Throwable) {
+        // Cannot tell, so behave like the main process: the worst case there is a helper holding
+        // repositories it never uses, which is waste. The other direction would be a service
+        // missing something it asked for.
+        false
     }
 }

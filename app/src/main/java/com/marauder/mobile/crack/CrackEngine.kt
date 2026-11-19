@@ -34,21 +34,31 @@ enum class Backend { AUTO, CPU, GPU }
  *
  * This is asked at run time rather than decided at build time, because "this build has Vulkan
  * support compiled in" and "this phone's driver will produce correct PMKs" are different
- * claims, and only the second one matters. The reasons are quoted verbatim from the native
- * probe, so the screen says what the driver actually reported instead of a generic shrug.
+ * claims, and only the second one matters. The reasons are quoted from what the driver actually
+ * reported (see [GpuCoreClient]), so the screen says what this device said instead of a generic
+ * shrug.
  *
  * `GPU` is refused rather than quietly run as CPU: a run labelled "GPU" whose rate came from
  * the CPU is a number nobody can act on. `AUTO` and `CPU` have no gap here because they are
  * served by whichever CPU engine this device can prove — the native one when its known-answer
  * test passes, the JVM one otherwise — and the crack screen names which one that is.
+ *
+ * A null [gpu] means the driver has never been asked. That is a gap, not a free pass: this app
+ * does not run guesses on hardware it has not checked.
  */
-fun backendGap(backend: Backend): String? = when (backend) {
+fun backendGap(
+    backend: Backend,
+    gpu: GpuFacts? = null,
+    libraryReason: String? = NativeCrypto.unavailableReason,
+): String? = when (backend) {
     Backend.GPU -> when {
-        !NativeCrypto.available ->
-            "GPU backend needs the native cracking library, and it is unavailable here: " +
-                (NativeCrypto.unavailableReason ?: "unknown reason")
-        !NativeCrypto.gpuPresent ->
-            "GPU backend refused by this device: ${NativeCrypto.gpuUnavailableReason}"
+        libraryReason != null ->
+            "GPU backend needs the native cracking library, and it is unavailable here: $libraryReason"
+        gpu == null ->
+            "the graphics driver on this device has not been asked yet, and this app will not run " +
+                "guesses on hardware it has not checked"
+        !gpu.usable -> (gpu.gap ?: "the graphics cores are not usable here") +
+            ", so a run that asks for them cannot start"
         else -> null
     }
     Backend.AUTO, Backend.CPU -> null

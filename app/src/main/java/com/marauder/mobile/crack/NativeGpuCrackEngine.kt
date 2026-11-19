@@ -1,6 +1,7 @@
 package com.marauder.mobile.crack
 
 import com.marauder.extractor.CrackCore
+import com.marauder.extractor.Material
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -37,41 +38,37 @@ import java.util.concurrent.atomic.AtomicBoolean
  * hash-the-key-first path) on this device, on this driver. If that fails the run stops
  * with the reason instead of reporting "not cracked" for a password that is in the list.
  */
-class NativeGpuCrackEngine : CrackEngine {
+class NativeGpuCrackEngine(private val gpu: GpuCore) : CrackEngine {
 
     private val stopRequested = AtomicBoolean(false)
 
     override suspend fun bench(): MeasuredRate? = withContext(Dispatchers.Default) {
-        if (!NativeCrypto.gpuPresent) return@withContext null
-        // A driver that disagrees with the CPU core cannot produce a meaningful rate either,
-        // so the gate is the same one a real run uses.
-        if (NativeCrypto.gpuSelfTest() != null) return@withContext null
+        // A driver that disagrees with the CPU core cannot produce a meaningful rate either, so the
+        // gate is the same one a real run uses. Asking it is the helper process's job: whatever a
+        // vendor driver does while being asked, this process has to stay alive to talk about it.
+        if (!gpuFacts(gpu.probe()).usable) return@withContext null
         val target = CrackCore.parse(BENCH_HASH) ?: return@withContext null
-        val index = listOf(NativeCrypto.TargetIndex(0, target.material()))
+        val material = Material.write(listOf(target.material()))
         // The first batches go to setting up the driver's command buffers, not to hashing; timing
         // them is what produced a GPU "rate" that no real run ever matched.
         val warmup = (0 until BENCH_WARMUP).map { "warmup-guess-$it" }
-        warmup.chunked(GPU_BATCH).forEach { NativeCrypto.gpuCrackBatch(index, it) }
+        warmup.chunked(GPU_BATCH).forEach { gpu.crackBatch(material, packCandidates(it)) }
         val tries = (0 until BENCH_GUESSES).map { "bench-guess-$it" }
         val t0 = System.nanoTime()
-        tries.chunked(GPU_BATCH).forEach { NativeCrypto.gpuCrackBatch(index, it) }
+        tries.chunked(GPU_BATCH).forEach { gpu.crackBatch(material, packCandidates(it)) }
         measuredRate(tries.size, System.nanoTime() - t0)
     }
 
     override fun run(config: CrackConfig): Flow<CrackEvent> = flow {
         stopRequested.set(false)
 
-        backendGap(config.backend)?.let {
+        // Real GPU work (25 PBKDF2 derivations), so it happens here rather than while the screen is
+        // being drawn: run() is already collected on a worker thread. The asking belongs to the
+        // helper process, and its answer is remembered for the life of this one - so a device is
+        // asked once, whatever that answer turns out to be.
+        val facts = gpuFacts(gpu.probe())
+        backendGap(config.backend, facts)?.let {
             emit(CrackEvent.Error(it))
-            emit(CrackEvent.Finished(completed = false))
-            return@flow
-        }
-
-        // Real GPU work (25 PBKDF2 derivations), so it happens here rather than while the
-        // screen is being drawn: run() is already collected on a worker thread. The verdict
-        // is cached for the life of the process, so this costs one probe per install.
-        NativeCrypto.gpuSelfTest()?.let {
-            emit(CrackEvent.Error("GPU refused, run not started: $it"))
             emit(CrackEvent.Finished(completed = false))
             return@flow
         }
@@ -106,6 +103,9 @@ class NativeGpuCrackEngine : CrackEngine {
         val targets = parsed.map { (hashIndex, target) ->
             NativeCrypto.TargetIndex(hashIndex, target.material())
         }
+        // Written once. It is the same blob for every batch of this run, and re-serialising it per
+        // batch would be per-batch work that has nothing to do with guessing.
+        val material = Material.write(parsed.map { (_, target) -> target.material() })
 
         val cracked = HashSet<Int>()          // hash-line indices already recovered
         var done = 0L
@@ -134,11 +134,12 @@ class NativeGpuCrackEngine : CrackEngine {
                     }
 
                     val hits = try {
-                        NativeCrypto.gpuCrackBatch(targets, batch)
+                        gpu.crackBatch(material, packCandidates(batch))
                     } catch (t: Throwable) {
-                        // The native side reported a real problem (unreadable material, a
-                        // corrupt batch, a salt the kernel would derive wrongly, a lost
-                        // device). "Not found" would be a lie.
+                        // The helper reported a real problem (unreadable material, a corrupt batch, a
+                        // salt the kernel would derive wrongly, a lost device), or it is gone: a vendor
+                        // driver dying mid-run is normal on a range of phones, and this is where that
+                        // arrives as a sentence instead of as a crash. "Not found" would be a lie.
                         gpuFailed = t.message ?: t.javaClass.simpleName
                         break
                     }

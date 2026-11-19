@@ -128,26 +128,40 @@ object NativeCrypto {
         return nativeGpuCrackBatch(material, packWords(words))
     }
 
+    /**
+     * The same call with the bytes the caller already has. Used by the GPU helper process, which
+     * receives the material blob and the packed candidates over binder and must not be asked to
+     * rebuild either one.
+     */
+    fun gpuCrackRaw(material: ByteArray, packedWords: ByteArray): IntArray =
+        nativeGpuCrackBatch(material, packedWords)
+
     /** A target plus the session's hash-line index it came from, in transport order. */
     class TargetIndex(val hashIndex: Int, val material: com.marauder.extractor.TargetMaterial)
 
-    /**
-     * u32 big-endian length + bytes per word, i.e. the same length-prefixed encoding
-     * the material TLV uses for its buffers.
-     *
-     * UTF-8, because that is what the JVM engine's `PBEKeySpec(password.toCharArray())`
-     * turns a candidate into. Non-ASCII candidates are then expanded identically by both
-     * engines — the disagreement that would otherwise appear as "the CPU run found it,
-     * the JVM run did not".
-     */
-    private fun packWords(words: List<String>): ByteArray {
-        val out = java.io.ByteArrayOutputStream(words.sumOf { it.length + 6 }.coerceAtLeast(64))
-        for (w in words) {
-            val b = w.toByteArray(Charsets.UTF_8)
-            out.write(b.size ushr 24); out.write(b.size ushr 16 and 0xFF)
-            out.write(b.size ushr 8 and 0xFF); out.write(b.size and 0xFF)
-            out.write(b)
-        }
-        return out.toByteArray()
+    private fun packWords(words: List<String>): ByteArray = packCandidates(words)
+}
+
+/**
+ * u32 big-endian length + bytes per word, i.e. the same length-prefixed encoding
+ * the material TLV uses for its buffers.
+ *
+ * UTF-8, because that is what the JVM engine's `PBEKeySpec(password.toCharArray())`
+ * turns a candidate into. Non-ASCII candidates are then expanded identically by both
+ * engines — the disagreement that would otherwise appear as "the CPU run found it,
+ * the JVM run did not".
+ *
+ * Top-level, because the caller is not always in this process: the GPU helper receives its
+ * candidates already packed over binder, and having it re-pack them would put a second definition
+ * of this encoding next to the first one — which is how two engines start disagreeing.
+ */
+fun packCandidates(words: List<String>): ByteArray {
+    val out = java.io.ByteArrayOutputStream(words.sumOf { it.length + 6 }.coerceAtLeast(64))
+    for (w in words) {
+        val b = w.toByteArray(Charsets.UTF_8)
+        out.write(b.size ushr 24); out.write(b.size ushr 16 and 0xFF)
+        out.write(b.size ushr 8 and 0xFF); out.write(b.size and 0xFF)
+        out.write(b)
     }
+    return out.toByteArray()
 }
