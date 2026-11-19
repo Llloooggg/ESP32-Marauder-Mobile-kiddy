@@ -16,11 +16,14 @@ import com.marauder.mobile.data.ListCsv
 import com.marauder.mobile.data.ListType
 import com.marauder.mobile.data.LiveClassifier
 import com.marauder.mobile.data.NmeaAssembler
+import com.marauder.mobile.data.ScanLedger
+import com.marauder.mobile.data.TargetLock
 import com.marauder.mobile.data.WardriveAssembler
 import com.marauder.mobile.data.Wordlist
 import com.marauder.mobile.data.WordlistsRepository
 import com.marauder.mobile.location.LocationRepository
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withContext
 import java.io.BufferedOutputStream
 import java.io.File
@@ -87,7 +90,7 @@ data class EvilPortalUiState(
     val fileName: String? = null,
     val htmlBytes: Int = 0,
     val deviceMax: Int = 0,         // MAX_HTML_SIZE reported by the device (0 until known)
-    val targetApIndex: Int? = null,
+    val targetApBssid: String? = null,
     val message: String? = null,
     val creds: List<DeviceMessage.Cred> = emptyList(),
 ) {
@@ -312,6 +315,15 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
 
     private val apBuf = ArrayList<DeviceMessage.Ap>()
     private val staBuf = ArrayList<DeviceMessage.Sta>()
+
+    /**
+     * BSSID-keyed view of the firmware's AP/client lists. The firmware addresses
+     * everything by list slot and rebuilds those lists whenever it scans, so a slot
+     * remembered from an earlier snapshot can point at a different network by the
+     * time it is used — which is how "targeted" work ends up aimed at one network
+     * while the clients shown belong to another. Identity lives here.
+     */
+    private val ledger = ScanLedger()
     private val ssidBuf = ArrayList<DeviceMessage.SsidRow>()
     private val ipBuf = ArrayList<DeviceMessage.Ip>()
     private val probeBuf = ArrayList<DeviceMessage.Probe>()
@@ -636,6 +648,14 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             meta["command"] = m.command
             if (m.eapolTotal > 0) meta["eapolFrames"] = m.eapolTotal.toString()
             if (m.ringDrops > 0) meta["ringDrops"] = m.ringDrops.toString()
+            // What the operation was pointed at. The capture's frames can belong to any
+            // network on that channel, so the analysis compares this against the BSSIDs
+            // actually present and says when they disagree.
+            m.target?.let {
+                meta[ArtifactRecord.TARGET_BSSID] = it.bssid.uppercase()
+                meta["target_essid"] = it.essid
+                meta["target_channel"] = it.channel.toString()
+            }
         }
         // The salt has to travel with the capture: a Marauder pcap often holds the
         // handshake but no beacon (the ESP32 stays on the target channel), and
@@ -743,7 +763,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     fun exportListArtifact(type: ListType): String? {
         val out = when (type) {
             ListType.ACCESS_POINTS -> CsvExport("Access points", "aps", ListCsv.aps(_aps.value), _aps.value.size)
-            ListType.STATIONS -> CsvExport("Clients", "stations", ListCsv.stations(_stations.value), _stations.value.size)
+            ListType.STATIONS -> CsvExport("Clients", "stations", ListCsv.stations(_stations.value, ledger.stationSlots), _stations.value.size)
             ListType.PROBES -> CsvExport("Probe requests", "probes", ListCsv.probes(_probes.value), _probes.value.size)
             ListType.SSIDS -> CsvExport("SSIDs", "ssids", ListCsv.ssids(_ssids.value), _ssids.value.size)
             ListType.IPS -> CsvExport("Hosts", "hosts", ListCsv.ips(_ips.value), _ips.value.size)
@@ -858,11 +878,175 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         apPollJob = null
     }
 
-    /** The AP with this firmware list index, or null once it left the list. */
-    fun ap(index: Int): DeviceMessage.Ap? = _aps.value.firstOrNull { it.index == index }
+    // --- Target pinning: BSSID is the identity, list slots are disposable -------
 
-    /** Stations the firmware has associated with the AP at this index. */
-    fun stationsFor(index: Int): List<DeviceMessage.Sta> = _stations.value.filter { it.ap == index }
+    /** Bumped on every AP/client commit so screens re-read the ledger. */
+    private val _snapshotGen = MutableStateFlow(0)
+    val snapshotGen: StateFlow<Int> = _snapshotGen.asStateFlow()
+
+    /** The board's current row for this BSSID, whatever slot it sits in now. */
+    fun apByBssid(bssid: String): DeviceMessage.Ap? =
+        _aps.value.firstOrNull { it.bssid.equals(bssid, ignoreCase = true) }
+
+    /** Clients the board attributes to this BSSID in the snapshot it just reported. */
+    fun clientsOf(bssid: String): List<DeviceMessage.Sta> = ledger.stationsOf(bssid)
+
+    /**
+     * True when no AP-list change happened after the client rows were read, so the
+     * client→AP attribution provably came from one firmware snapshot. False means
+     * the list moved underneath the client rows: the screen has to say so instead of
+     * showing MACs under a network it can no longer vouch for.
+     */
+    val clientsTrusted: Boolean get() = ledger.stationsTrusted
+
+    /** Live firmware slot of this BSSID, or null when the board no longer lists it. */
+    fun slotOf(bssid: String): Int? = ledger.indexOf(bssid)
+
+    /** Live firmware slot of a client MAC, for `select -c <slot>`. */
+    fun selectClient(mac: String) {
+        val slot = ledger.stationIndex(mac)
+        if (slot == null) {
+            _snackbar.tryEmit("$mac is not in the board's client list anymore — refreshing")
+            refreshList(ListType.STATIONS)
+            return
+        }
+        val owner = ledger.stationOwner(mac)
+        runCommand("select -c $slot")
+        refreshList(ListType.STATIONS)
+        owner?.let { appendConsole("client $mac of $it → firmware slot $slot", LineKind.SYSTEM) }
+    }
+
+    private val _targetPin = MutableStateFlow<TargetPinState>(TargetPinState.Idle)
+    val targetPin: StateFlow<TargetPinState> = _targetPin.asStateFlow()
+
+    /** Signalled by the next `jsonlist a` commit while a pin needs confirming. */
+    private var apListCommit: CompletableDeferred<Unit>? = null
+    private var pinJob: Job? = null
+
+    /**
+     * Run [command] against one access point — and prove it is that one before a
+     * single frame goes out.
+     *
+     * The firmware's targeted work (`sniffpmkid -d -l`, `attack -t deauth -c`) acts
+     * on *every* selected AP, and `select -a <slot>` merely toggles one slot, so a
+     * remembered slot can both miss the intended network and leave an older one
+     * attacked. So: pin by ESSID filter where the firmware can take it (which also
+     * clears every other selection), pin out same-named duplicates by their live
+     * slots, read the list back, and start the mission only when that read shows
+     * exactly the target — plus, at most, APs that carry the same name.
+     */
+    fun startPinnedMission(
+        title: String,
+        command: String,
+        kind: MissionKind,
+        bssid: String,
+    ): Boolean {
+        if (usb.status.value != UsbSerialManager.Status.CONNECTED) return false
+        val pin = ledger.pin(bssid)
+        if (pin == null) {
+            refusePin(bssid, "The board's current scan list does not contain $bssid. Rescan and pick the network again.")
+            return false
+        }
+        val plan = TargetLock.plan(pin, ledger.aps)
+        pinJob?.cancel()
+        _targetPin.value = TargetPinState.Pinning(bssid, pin.essid, plan.byEssid)
+        pinJob = viewModelScope.launch {
+            plan.commands.forEach { runCommand(it) }
+            var attempt = 0
+            while (isActive) {
+                // Give the firmware a moment to apply the selection, then read the
+                // list back: the read is the only evidence of what is selected.
+                delay(PIN_SETTLE_MS)
+                val gate = CompletableDeferred<Unit>()
+                apListCommit = gate
+                refreshList(ListType.ACCESS_POINTS)
+                val answered = withTimeoutOrNull(PIN_LIST_ACK_MS) { gate.await() } != null
+                apListCommit = null
+                if (!answered) {
+                    refusePin(bssid, "The board did not answer the list request, so its selection could not be confirmed. Nothing was transmitted.")
+                    return@launch
+                }
+                when (val outcome = TargetLock.verify(bssid, pin.essid, ledger.aps)) {
+                    is TargetLock.Outcome.Locked -> {
+                        _targetPin.value = TargetPinState.Pinned(
+                            bssid = bssid,
+                            essid = pin.essid,
+                            selected = outcome.selected,
+                            duplicates = outcome.duplicates,
+                            byEssid = plan.byEssid,
+                        )
+                        if (outcome.duplicates.isNotEmpty()) {
+                            val extra = outcome.duplicates.joinToString()
+                            appendConsole(
+                                "Target pinned: $bssid — note $extra shares this SSID and is selected too",
+                                LineKind.SYSTEM,
+                            )
+                            _snackbar.tryEmit("Also selecting ${outcome.duplicates.size} AP(s) with the same name")
+                        }
+                        startMission(
+                            title = title,
+                            command = command,
+                            kind = kind,
+                            target = MissionTarget(pin.essid, bssid, pin.channel),
+                        )
+                        return@launch
+                    }
+                    is TargetLock.Outcome.TargetGone -> {
+                        refusePin(bssid, "The board dropped $bssid from its scan list mid-selection. Nothing was transmitted.")
+                        return@launch
+                    }
+                    is TargetLock.Outcome.TargetNotSelected -> {
+                        if (++attempt >= PIN_MAX_ATTEMPTS) {
+                            refusePin(
+                                bssid,
+                                "The board would not leave $bssid selected (selected: ${
+                                    outcome.selected.ifEmpty { "none" }
+                                }). Nothing was transmitted.",
+                            )
+                            return@launch
+                        }
+                        appendConsole("Selection unconfirmed for $bssid — retrying ($attempt)", LineKind.SYSTEM)
+                        plan.commands.forEach { runCommand(it) }
+                    }
+                    is TargetLock.Outcome.ExtraTargets -> {
+                        refusePin(
+                            bssid,
+                            "Other networks would be attacked with it: ${outcome.extras.joinToString()}. " +
+                                "Nothing was transmitted — clear the selection (select -a all) or pick a network with a unique name.",
+                        )
+                        return@launch
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    /** Refuse a targeted action and say why, in the console, the journal and the UI. */
+    private fun refusePin(bssid: String, reason: String) {
+        _targetPin.value = TargetPinState.Refused(bssid, reason)
+        appendConsole("✗ target not pinned: $reason", LineKind.ERROR)
+        artifacts.journal.record(
+            JournalEntry.SAFETY, "target refused: $bssid",
+            mapOf("bssid" to bssid, "reason" to reason),
+        )
+        _snackbar.tryEmit("Target not confirmed — nothing was sent")
+    }
+
+    /**
+     * Index-addressed commands (`foxhunt -w N`, `csimotion start N`,
+     * `evilportal -c setap N`) are safe only if the slot still belongs to the
+     * network it was planned for, so callers resolve it here at the moment of
+     * sending rather than carrying a number across screens.
+     */
+    fun slotCommand(base: String, bssid: String): String? {
+        val slot = ledger.indexOf(bssid) ?: run {
+            _snackbar.tryEmit("$bssid is not in the board's list anymore — rescan")
+            refreshList(ListType.ACCESS_POINTS)
+            return null
+        }
+        return "$base $slot"
+    }
 
     // --- Location permission (requested from the live screen) ----------------
 
@@ -1103,9 +1287,11 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         _evilPortal.value = EvilPortalUiState()
     }
 
-    /** Choose which scanned AP (by list index) the portal impersonates. */
-    fun setPortalTargetAp(index: Int?) {
-        _evilPortal.value = _evilPortal.value.copy(targetApIndex = index)
+    /** Choose which scanned AP (by BSSID) the portal impersonates. Chosen by BSSID
+     *  because the firmware's `setap` addresses a list slot that any scan can move;
+     *  the slot is resolved at start time. */
+    fun setPortalTargetAp(bssid: String?) {
+        _evilPortal.value = _evilPortal.value.copy(targetApBssid = bssid)
     }
 
     /**
@@ -1192,7 +1378,23 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     fun startEvilPortal() {
         val st = _evilPortal.value
         if (!st.htmlReady) { _snackbar.tryEmit("Upload an HTML page first"); return }
-        st.targetApIndex?.let { runCommand("evilportal -c setap $it") }
+        st.targetApBssid?.let { bssid ->
+            // `evilportal -c setap <slot>` clones whatever AP sits in that slot, so the
+            // slot is resolved here — from the board's current list — and a target the
+            // board has forgotten stops the flow instead of cloning another network.
+            val slot = ledger.indexOf(bssid)
+            if (slot == null) {
+                refusePin(
+                    bssid,
+                    "The portal target is no longer in the board's scan list. Pick it again after a scan — " +
+                        "setap addresses a list slot, and that slot is not this network anymore.",
+                )
+                return
+            }
+            val essid = apByBssid(bssid)?.essid?.ifBlank { "(hidden)" } ?: "?"
+            appendConsole("portal clones $essid · $bssid (slot $slot)", LineKind.SYSTEM)
+            runCommand("evilportal -c setap $slot")
+        }
         runCommand("evilportal -c start")
         _evilPortal.value = st.copy(phase = EvilPortalUiState.Phase.Running, creds = emptyList())
         liveJob?.cancel()
@@ -1352,12 +1554,27 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     private fun commitList(listCode: String) {
         when (listCode) {
             "a" -> {
+                val drifted = ledger.commitAps(apBuf)
                 _aps.value = apBuf.toList()
+                _snapshotGen.value = _snapshotGen.value + 1
                 rememberEssids(apBuf)
                 apBuf.clear()
+                if (drifted && _stations.value.isNotEmpty()) {
+                    appendConsole(
+                        "AP list re-indexed by the board — client rows refetched",
+                        LineKind.SYSTEM,
+                    )
+                    refreshList(ListType.STATIONS)
+                }
+                apListCommit?.complete(Unit)
             }
             "s" -> { _ssids.value = ssidBuf.toList(); ssidBuf.clear() }
-            "c" -> { _stations.value = staBuf.toList(); staBuf.clear() }
+            "c" -> {
+                ledger.commitStations(staBuf)
+                _stations.value = staBuf.toList()
+                _snapshotGen.value = _snapshotGen.value + 1
+                staBuf.clear()
+            }
             "i" -> { _ips.value = ipBuf.toList(); ipBuf.clear() }
             "p" -> { _probes.value = probeBuf.toList(); probeBuf.clear() }
             "t" -> { _airtags.value = airtagBuf.toList(); airtagBuf.clear() }
@@ -1406,6 +1623,8 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         _deviceStatus.value = null
         _aps.value = emptyList()
         _stations.value = emptyList()
+        ledger.clear()
+        _targetPin.value = TargetPinState.Idle
         _ssids.value = emptyList()
         _ips.value = emptyList()
         _probes.value = emptyList()
@@ -1466,6 +1685,16 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
 
         /** How long to wait for the firmware's `{"t":"baud"}` confirmation. */
         private const val BAUD_ACK_TIMEOUT_MS = 3000L
+
+        /** Pause before reading the list back after selection commands (the firmware
+         *  applies `select` synchronously, but the reply order is what we can see). */
+        private const val PIN_SETTLE_MS = 250L
+
+        /** How long a `jsonlist a` may take to answer during pinning. */
+        private const val PIN_LIST_ACK_MS = 3000L
+
+        /** Selection attempts before refusing a targeted action. */
+        private const val PIN_MAX_ATTEMPTS = 3
 
         /** Free heap (bytes) below which a streaming capture is stopped early. */
         private const val LOW_HEAP_BYTES = 40_000L

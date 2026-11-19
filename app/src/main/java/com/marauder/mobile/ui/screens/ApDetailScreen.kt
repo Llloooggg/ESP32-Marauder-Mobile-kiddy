@@ -29,6 +29,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -67,6 +68,8 @@ import com.marauder.mobile.ui.theme.Success
 import com.marauder.mobile.ui.theme.Warning
 import com.marauder.mobile.vm.MarauderViewModel
 import com.marauder.mobile.vm.MissionKind
+import com.marauder.mobile.vm.MissionTarget
+import com.marauder.mobile.vm.TargetPinState
 
 /** One gated action the target screen can start against the selected AP. */
 private data class TargetAction(
@@ -80,8 +83,12 @@ private data class TargetAction(
     val requiresCap: String? = null,
     /** Mission to start (null = open a live/analyzer screen instead). */
     val mission: MissionKind? = null,
-    /** Commands run before the main one (e.g. `select -a 3`). */
-    val preCommands: List<String> = emptyList(),
+    /** Route through the target lock: the board's selection is pinned to this BSSID
+     *  and read back before the command is allowed to run. */
+    val pinned: Boolean = false,
+    /** Commands addressed by list slot (`foxhunt -w <slot>`): the slot is resolved
+     *  from the board's current list at the moment of pressing, never carried over. */
+    val slotPrefix: String? = null,
     /** Opens the raw live screen: the firmware streams its own table/telemetry. */
     val liveTitle: String? = null,
     val analyzer: AnalyzerKind? = null,
@@ -94,7 +101,7 @@ private data class TargetAction(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ApDetailScreen(
-    apIndex: Int,
+    apBssid: String,
     vm: MarauderViewModel,
     onBack: () -> Unit,
     onOpenMission: (Long) -> Unit,
@@ -102,34 +109,55 @@ fun ApDetailScreen(
     onOpenAnalyzer: (command: String, kind: AnalyzerKind) -> Unit,
 ) {
     val aps by vm.aps.collectAsState()
-    val stations by vm.stations.collectAsState()
+    val snapshotGen by vm.snapshotGen.collectAsState()
     val info by vm.info.collectAsState()
     val mission by vm.activeMission.collectAsState()
+    val pin by vm.targetPin.collectAsState()
 
-    val ap = aps.firstOrNull { it.index == apIndex }
-    val clients = remember(stations, apIndex) { stations.filter { it.ap == apIndex } }
+    // Identity is the BSSID, not the board's list slot: the firmware rebuilds that
+    // list whenever it scans, so a slot carried across screens can end up naming a
+    // different network. The slot is looked up fresh, for this BSSID, every time.
+    val ap = aps.firstOrNull { it.bssid.equals(apBssid, ignoreCase = true) }
+    val clients = remember(snapshotGen, apBssid) { vm.clientsOf(apBssid) }
+    val clientsTrusted = vm.clientsTrusted
 
-    LaunchedEffect(apIndex) {
-        vm.refreshList(ListType.STATIONS)
+    LaunchedEffect(apBssid) {
+        // AP list first, clients second: the client rows are attributed to the AP
+        // list they were read against, so this order keeps that pairing provable.
         vm.refreshList(ListType.ACCESS_POINTS)
+        vm.refreshList(ListType.STATIONS)
+    }
+
+    // A pinned action only starts after the board confirms the selection, so follow
+    // the mission that appears for this BSSID rather than assume one started.
+    var jumpedMission by remember { mutableStateOf(-1L) }
+    LaunchedEffect(mission?.id) {
+        val m = mission
+        if (m != null && !m.done && m.target?.bssid.equals(apBssid, ignoreCase = true) && m.id != jumpedMission) {
+            jumpedMission = m.id
+            onOpenMission(m.id)
+        }
     }
 
     var pending by remember { mutableStateOf<TargetAction?>(null) }
 
-    val actions = remember(apIndex, info, ap) {
-        val select = "select -a $apIndex"
+    val actions = remember(apBssid, info, ap) {
+        val slot = ap?.bssid?.let { vm.slotOf(it) } ?: -1
         val ch = ap?.channel ?: 0
         listOf(
             TargetAction(
                 title = "Capture handshake / PMKID",
-                subtitle = "sniffpmkid -d -l · sends deauth around this AP",
+                subtitle = "select by name, then sniffpmkid -d -l · only this network selected",
                 icon = Icons.Filled.Key,
                 tint = MarauderCyan,
                 tier = Tier.MODERATE,
                 command = "sniffpmkid -d -l",
-                preCommands = listOf(select),
+                pinned = true,
                 mission = MissionKind.CAPTURE,
-                note = "The board transmits deauthentication frames to force a re-authentication, then streams the WPA handshake (or a PMKID) into a pcap on this phone. Only do this to networks you own or may test.",
+                note = "The app first makes the board select this network alone and reads its list back to " +
+                    "prove it; only then does the board transmit deauthentication frames to force a " +
+                    "re-authentication and stream the WPA handshake (or a PMKID) into a pcap on this phone. " +
+                    "Only do this to networks you own or may test.",
             ),
             TargetAction(
                 title = "Listen for handshake (passive)",
@@ -144,32 +172,36 @@ fun ApDetailScreen(
             ),
             TargetAction(
                 title = "Deauth flood (targeted)",
-                subtitle = "attack -t deauth -c · DoS only, no pcap",
+                subtitle = "select by name, then attack -t deauth -c · DoS only, no pcap",
                 icon = Icons.Filled.Bolt,
                 tint = CatAttack,
                 tier = Tier.MODERATE,
                 command = "attack -t deauth -c",
-                preCommands = listOf(select),
+                pinned = true,
                 mission = MissionKind.ATTACK,
-                note = "This disconnects every client of this network repeatedly. It does not capture anything. Only run it against your own network.",
+                note = "This disconnects every client of this network repeatedly. The board attacks whatever is " +
+                    "selected, so the app pins the selection to this access point and verifies it first. " +
+                    "It does not capture anything. Only run it against your own network.",
             ),
             TargetAction(
                 title = "Fox hunt this AP",
-                subtitle = "foxhunt -w $apIndex · signal direction finding",
+                subtitle = "foxhunt -w $slot · signal direction finding",
                 icon = Icons.Filled.SettingsInputAntenna,
                 tint = CatSniffer,
                 tier = Tier.SAFE,
-                command = "foxhunt -w $apIndex",
+                command = "foxhunt -w $slot",
+                slotPrefix = "foxhunt -w",
                 requiresCap = "foxhunt",
                 liveTitle = "Fox Hunt",
             ),
             TargetAction(
                 title = "CSI motion on this AP",
-                subtitle = "csimotion start $apIndex · sense movement",
+                subtitle = "csimotion start $slot · sense movement",
                 icon = Icons.Filled.Sensors,
                 tint = CatSniffer,
                 tier = Tier.SAFE,
-                command = "csimotion start $apIndex",
+                command = "csimotion start $slot",
+                slotPrefix = "csimotion start",
                 requiresCap = "csi",
                 liveTitle = "CSI Motion",
             ),
@@ -188,7 +220,7 @@ fun ApDetailScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(ap?.essid?.ifBlank { "Hidden network" } ?: "Access point #$apIndex") },
+                title = { Text(ap?.essid?.ifBlank { "Hidden network" } ?: apBssid) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
                 },
@@ -203,8 +235,10 @@ fun ApDetailScreen(
             Box(Modifier.fillMaxSize().padding(inner), contentAlignment = Alignment.Center) {
                 EmptyState(
                     icon = Icons.Filled.Key,
-                    title = "Not in the list anymore",
-                    subtitle = "The firmware cleared or re-indexed its AP list. Scan again and pick the network.",
+                    title = "The board no longer lists it",
+                    subtitle = "$apBssid is not in the firmware's current scan list, so nothing can be aimed at " +
+                        "it — an index would point at whichever network happens to sit there now. Run an AP scan " +
+                        "and pick the network again.",
                 )
             }
             return@Scaffold
@@ -216,6 +250,7 @@ fun ApDetailScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item { ApHeader(ap) }
+            item { PinCard(pin, apBssid) }
 
             if (Security.handshakable(ap.sec) && clients.isEmpty()) {
                 item {
@@ -252,6 +287,25 @@ fun ApDetailScreen(
                     modifier = Modifier.padding(top = 6.dp),
                 )
             }
+            if (!clientsTrusted && clients.isNotEmpty()) {
+                item {
+                    Hint(
+                        "The board re-indexed its access-point list after these clients were read, so their " +
+                            "network pairing is not provable right now. Re-read the lists before selecting one — " +
+                            "a client selected by a stale index belongs to a different network.",
+                        Danger,
+                    )
+                }
+                item {
+                    OutlinedButton(
+                        onClick = {
+                            vm.refreshList(ListType.ACCESS_POINTS)
+                            vm.refreshList(ListType.STATIONS)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Re-read AP and client lists") }
+                }
+            }
             if (clients.isEmpty()) {
                 item {
                     Text(
@@ -261,8 +315,8 @@ fun ApDetailScreen(
                     )
                 }
             } else {
-                items(clients, key = { "${it.ap}-${it.index}" }) { sta ->
-                    StationRow(sta, onSelect = { vm.runCommand("select -c ${sta.index}"); vm.refreshList(ListType.STATIONS) })
+                items(clients, key = { it.mac }) { sta ->
+                    StationRow(sta, onSelect = { vm.selectClient(sta.mac) })
                 }
             }
         }
@@ -292,25 +346,79 @@ private fun run(
     onOpenLive: (title: String, command: String) -> Unit,
     onOpenAnalyzer: (command: String, kind: AnalyzerKind) -> Unit,
 ) {
+    val title = "${ap.essid.ifBlank { ap.bssid }} · ${action.title}"
     when {
         action.analyzer != null -> onOpenAnalyzer(action.command, action.analyzer)
-        action.liveTitle != null -> onOpenLive(action.liveTitle, action.command)
-        action.mission != null -> {
-            val title = "${ap.essid.ifBlank { ap.bssid }} · ${action.title}"
-            if (vm.startMission(title, action.command, action.mission, action.preCommands)) {
-                vm.activeMission.value?.let { onOpenMission(it.id) }
-            }
+
+        action.liveTitle != null -> {
+            // Slot-addressed commands (`foxhunt -w N`, `csimotion start N`) get the slot
+            // this network occupies right now; a null means the board forgot it and has
+            // already told the user, so there is nothing to send.
+            val command = action.slotPrefix?.let { vm.slotCommand(it, ap.bssid) ?: return } ?: action.command
+            onOpenLive(action.liveTitle, command)
         }
-        else -> {
-            action.preCommands.forEach { vm.runCommand(it) }
-            vm.runCommand(action.command)
-        }
+
+        action.pinned && action.mission != null ->
+            // The board's selection is pinned to this BSSID and read back first; the
+            // mission starts inside that check, and only if the check agrees.
+            vm.startPinnedMission(title, action.command, action.mission, ap.bssid)
+
+        action.mission != null ->
+            vm.startMission(
+                title = title,
+                command = action.command,
+                kind = action.mission,
+                target = MissionTarget(ap.essid, ap.bssid, ap.channel),
+            )
+
+        else -> vm.runCommand(action.command)
     }
 }
 
+/**
+ * What the board has agreed about this target right now. The point of showing it is
+ * that a targeted attack is a promise: the app says which BSSID the board confirmed
+ * as selected, including when that confirmation covers more than one access point
+ * (same SSID) or when it refused and nothing was transmitted.
+ */
 @Composable
-private fun ApHeader(ap: DeviceMessage.Ap) {
-    Surface(
+private fun PinCard(pin: TargetPinState, apBssid: String) {
+    if (pin.bssidForCard() == null || !pin.bssidForCard()!!.equals(apBssid, ignoreCase = true)) return
+    when (pin) {
+        TargetPinState.Idle -> Unit
+        is TargetPinState.Pinning -> Hint(
+            "Asking the board to select ${pin.essid.ifBlank { pin.bssid }} and nothing else, and reading its " +
+                "list back — nothing is transmitted until that agrees.",
+            MarauderCyan,
+        )
+        is TargetPinState.Pinned -> Hint(
+            buildString {
+                append("Board confirms selected: ${pin.selected.joinToString()}")
+                if (pin.duplicates.isNotEmpty()) {
+                    append(". ${pin.duplicates.size} more BSSID(s) carry this exact SSID and are selected with it: ")
+                    append(pin.duplicates.joinToString())
+                    append(" — the firmware cannot separate an SSID from its other access points.")
+                }
+                if (!pin.byEssid) {
+                    append(" Addressed by list slot because this SSID cannot be used as a firmware filter.")
+                }
+            },
+            if (pin.duplicates.isEmpty()) Success else Warning,
+        )
+        is TargetPinState.Refused -> Hint("Refused — ${pin.reason}", Danger)
+    }
+}
+
+/** The BSSID a pin state is about, or null when it is not tied to one. */
+private fun TargetPinState.bssidForCard(): String? = when (this) {
+    is TargetPinState.Pinning -> bssid
+    is TargetPinState.Pinned -> bssid
+    is TargetPinState.Refused -> bssid
+    TargetPinState.Idle -> null
+}
+
+@Composable
+private fun ApHeader(ap: DeviceMessage.Ap) {    Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth(),

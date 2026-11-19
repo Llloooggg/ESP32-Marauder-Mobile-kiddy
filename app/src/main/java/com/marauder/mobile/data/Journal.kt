@@ -14,6 +14,8 @@ import java.io.FileWriter
  *  - `mission`  mission started / stopped (meta: command, kind, seconds, bytes…)
  *  - `cred`     an Evil Portal form submission (meta: user, pass)
  *  - `error`    firmware error line or app-level failure
+ *  - `safety`   the app refused to send something (unconfirmed target, rate not
+ *               acknowledged…) — what was *not* done, and why
  *  - `note`     anything worth keeping that is not one of the above
  *  - `output`   the board's own console text (the raw log)
  */
@@ -30,6 +32,7 @@ data class JournalEntry(
         const val MISSION = "mission"
         const val CRED = "cred"
         const val ERROR = "error"
+        const val SAFETY = "safety"
         const val NOTE = "note"
         const val OUTPUT = "output"
     }

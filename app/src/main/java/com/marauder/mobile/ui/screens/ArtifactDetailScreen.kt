@@ -52,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.marauder.mobile.data.Artifact
 import com.marauder.mobile.data.ArtifactRecord
+import com.marauder.mobile.data.CaptureAttribution
 import com.marauder.mobile.ui.copyToDocument
 import com.marauder.mobile.ui.components.SectionLabel
 import com.marauder.mobile.ui.components.StatChip
@@ -156,6 +157,30 @@ fun ArtifactDetailScreen(
                     else -> StatChip("HASHES", "not analysed", Warning)
                 }
                 if (!cracked.isNullOrBlank()) StatChip("CRACKED", cracked, Success)
+            }
+
+            // The BSSID the operation was pinned to vs the BSSIDs the credential
+            // material in this file belongs to. They can differ — the board hears every
+            // network on the channel — and when they do, that has to be stated here
+            // rather than discovered by cross-reading MACs.
+            val aimed = record.meta[ArtifactRecord.TARGET_BSSID]
+            val capturedNetworks = (record.meta["networks"] ?: "").split(' ').filter { it.isNotBlank() }
+            val attribution = remember(record.meta) { CaptureAttribution.verdict(aimed, capturedNetworks) }
+            when (attribution) {
+                CaptureAttribution.Verdict.Match -> StatChip("AIMED AT", aimed.orEmpty(), Success)
+                is CaptureAttribution.Verdict.Mismatch -> {
+                    SectionLabel("This capture does not hold the network you aimed at")
+                    Text(
+                        CaptureAttribution.explain(attribution).orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Danger,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        StatChip("AIMED AT", attribution.aimed, MarauderTextDim)
+                        StatChip("CAPTURED", attribution.captured.joinToString().ifEmpty { "—" }, Danger)
+                    }
+                }
+                else -> Unit
             }
 
             SectionLabel("What this file holds")

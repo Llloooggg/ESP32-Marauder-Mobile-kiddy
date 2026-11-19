@@ -20,9 +20,19 @@ object ListCsv {
         )
     }
 
-    fun stations(rows: List<DeviceMessage.Sta>): String = build(
-        listOf("index", "mac", "ap_index", "packets", "selected"), rows,
-    ) { r -> listOf(r.index.toString(), r.mac, r.ap.toString(), r.packets.toString(), r.selected.toString()) }
+    /**
+     * Client rows. [apBySlot] resolves the firmware's `ap_index` (a list slot that any
+     * scan can move) to the BSSID of the network the board meant, so an exported
+     * client list names the network instead of a number that stops meaning it.
+     */
+    fun stations(rows: List<DeviceMessage.Sta>, apBySlot: Map<Int, String> = emptyMap()): String = build(
+        listOf("index", "mac", "ap_bssid", "ap_index", "packets", "selected"), rows,
+    ) { r ->
+        listOf(
+            r.index.toString(), r.mac, apBySlot[r.ap].orEmpty(), r.ap.toString(),
+            r.packets.toString(), r.selected.toString(),
+        )
+    }
 
     fun probes(rows: List<DeviceMessage.Probe>): String = build(
         listOf("index", "probe_ssid", "requests", "selected"), rows,

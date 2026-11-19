@@ -86,7 +86,7 @@ private object Routes {
     const val EVIL_PORTAL = "evil_portal_screen"
 
     fun menu(id: String) = "$MENU/$id"
-    fun ap(index: Int) = "$AP/$index"
+    fun ap(bssid: String) = "$AP/${Uri.encode(bssid)}"
     fun mission(id: Long) = "$MISSION/$id"
     fun artifact(name: String) = "$ARTIFACT/${Uri.encode(name)}"
     fun crack(name: String) = "$CRACK/${Uri.encode(name)}"
@@ -175,7 +175,7 @@ fun AppRoot() {
                 ScanScreen(
                     vm = vm,
                     onBack = { nav.popBackStack() },
-                    onOpenAp = { index -> nav.navigate(Routes.ap(index)) },
+                    onOpenAp = { bssid -> nav.navigate(Routes.ap(bssid)) },
                     onOpenMission = { id -> nav.navigate(Routes.mission(id)) },
                 )
             }
@@ -217,11 +217,11 @@ fun AppRoot() {
             }
 
             composable(
-                route = "${Routes.AP}/{index}",
-                arguments = listOf(navArgument("index") { type = NavType.IntType }),
+                route = "${Routes.AP}/{bssid}",
+                arguments = listOf(navArgument("bssid") { type = NavType.StringType }),
             ) { entry ->
                 ApDetailScreen(
-                    apIndex = entry.arguments?.getInt("index") ?: -1,
+                    apBssid = entry.arguments?.getString("bssid").orEmpty(),
                     vm = vm,
                     onBack = { nav.popBackStack() },
                     onOpenMission = { id -> nav.navigate(Routes.mission(id)) },

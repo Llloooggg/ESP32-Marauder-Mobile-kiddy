@@ -140,13 +140,13 @@ fun EvilPortalScreen(vm: MarauderViewModel, onBack: () -> Unit) {
                         onPick = { picker.launch(arrayOf("text/html", "text/plain", "*/*")) },
                     )
                     if (state.htmlReady) {
-                        TargetApCard(aps = aps, selected = state.targetApIndex, onSelect = vm::setPortalTargetAp)
+                        TargetApCard(aps = aps, selected = state.targetApBssid, onSelect = vm::setPortalTargetAp)
                         Button(
                             onClick = { confirmStart = true },
-                            enabled = state.targetApIndex != null,
+                            enabled = state.targetApBssid != null,
                             modifier = Modifier.fillMaxWidth(),
                         ) { Text("Start portal") }
-                        if (state.targetApIndex == null) {
+                        if (state.targetApBssid == null) {
                             Text(
                                 "Pick a target access point above to enable Start.",
                                 style = MaterialTheme.typography.labelSmall,
@@ -269,8 +269,8 @@ private fun UploadingCard(state: EvilPortalUiState) {
 @Composable
 private fun TargetApCard(
     aps: List<DeviceMessage.Ap>,
-    selected: Int?,
-    onSelect: (Int?) -> Unit,
+    selected: String?,
+    onSelect: (String?) -> Unit,
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -291,11 +291,11 @@ private fun TargetApCard(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     aps.forEach { ap ->
-                        val isSel = selected == ap.index
+                        val isSel = selected.equals(ap.bssid, ignoreCase = true)
                         Surface(
                             shape = RoundedCornerShape(10.dp),
                             color = if (isSel) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.fillMaxWidth().clickable { onSelect(if (isSel) null else ap.index) },
+                            modifier = Modifier.fillMaxWidth().clickable { onSelect(if (isSel) null else ap.bssid) },
                         ) {
                             Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Filled.Router, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
@@ -306,7 +306,8 @@ private fun TargetApCard(
                                         color = MaterialTheme.colorScheme.onSurface,
                                         fontWeight = FontWeight.SemiBold,
                                     )
-                                    Text("#${ap.index} · ch ${ap.channel} · ${ap.rssi} dBm", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(ap.bssid, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("ch ${ap.channel} · ${ap.rssi} dBm", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 if (isSel) Icon(Icons.Filled.CheckCircle, contentDescription = "Selected", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                             }

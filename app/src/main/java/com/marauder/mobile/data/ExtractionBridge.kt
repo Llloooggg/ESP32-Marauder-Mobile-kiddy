@@ -27,6 +27,8 @@ data class HashExtractResult(
     val m4: Int = 0,                // client ACKs (no key material)
     val badRecords: Int = 0,        // broken records: frames lost between board and phone
     val lostBytes: Int = 0,         // bytes skipped while getting the record stream back
+    /** BSSIDs the extracted material actually belongs to, uppercase, sorted. */
+    val networks: List<String> = emptyList(),
 ) {
     val usable: Boolean get() = hashLines.isNotEmpty()
 }

@@ -33,6 +33,7 @@ class PcapExtractionBridge : ExtractionBridge {
                 m4 = report.m4Frames,
                 badRecords = report.badRecords,
                 lostBytes = report.lostBytes,
+                networks = report.hashes.map { it.bssid.uppercase() }.distinct().sorted(),
             )
         } catch (e: Exception) {
             // The extractor is defensive already; anything escaping here (e.g. an

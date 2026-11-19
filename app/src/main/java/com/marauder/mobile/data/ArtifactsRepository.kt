@@ -35,6 +35,9 @@ data class ArtifactRecord(
          */
         const val SSID_META = "ssid."
 
+        /** Meta key naming the BSSID a capture was aimed at, as the app pinned it. */
+        const val TARGET_BSSID = "target_bssid"
+
         /** bssid → SSID pairs stored in a record's meta. */
         fun knownEssids(meta: Map<String, String>): Map<String, String> =
             meta.filterKeys { it.startsWith(SSID_META) }
@@ -196,18 +199,33 @@ class ArtifactsRepository(context: Context) {
             "m4" to result.m4.toString(),
             "badRecords" to result.badRecords.toString(),
             "lostBytes" to result.lostBytes.toString(),
+            // Which networks the extracted material belongs to — compared against the
+            // BSSID the operation was aimed at, so "wrong network" is visible rather
+            // than something the user has to notice by cross-reading MACs.
+            "networks" to result.networks.joinToString(" "),
         )
+        val attribution = CaptureAttribution.verdict(
+            artifact.record.meta[ArtifactRecord.TARGET_BSSID],
+            result.networks,
+        )
+        val explanation = CaptureAttribution.explain(attribution)
+        val note = listOfNotNull(result.note, explanation).joinToString("; ").ifEmpty { null }
+        val aimMeta = if (attribution is CaptureAttribution.Verdict.Mismatch) {
+            mapOf("aimed_bssid" to attribution.aimed, "aimed_missing" to "1")
+        } else {
+            emptyMap()
+        }
         if (!result.usable) {
             store.setHashResult(
                 name,
                 ArtifactRecord.HASH_FAIL,
-                result.note ?: "no PMKID or handshake in this capture",
-                diagnostics,
+                note ?: "no PMKID or handshake in this capture",
+                diagnostics + aimMeta,
             )
             return result
         }
         runCatching { store.hashFileFor(name).writeText(result.hashLines.joinToString("\n")) }
-        store.setHashResult(name, ArtifactRecord.HASH_DONE, result.note ?: "", diagnostics)
+        store.setHashResult(name, ArtifactRecord.HASH_DONE, note ?: "", diagnostics + aimMeta)
         return result
     }
 

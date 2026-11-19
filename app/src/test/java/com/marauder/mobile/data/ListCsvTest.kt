@@ -21,6 +21,19 @@ class ListCsvTest {
     }
 
     @Test
+    fun clientsCsvNamesTheNetworkInsteadOfADriftingSlot() {
+        val rows = listOf(
+            DeviceMessage.Sta(ap = 1, index = 7, selected = false, packets = 42, mac = "11:22:33:44:55:66"),
+            DeviceMessage.Sta(ap = 4, index = 9, selected = false, packets = 1, mac = "aa:aa:aa:aa:aa:aa"),
+        )
+        val lines = ListCsv.stations(rows, mapOf(1 to "AA:BB:CC:DD:EE:02")).trim().lines()
+        assertEquals("index,mac,ap_bssid,ap_index,packets,selected", lines[0])
+        assertEquals("7,11:22:33:44:55:66,AA:BB:CC:DD:EE:02,1,42,false", lines[1])
+        // A slot the board no longer has stays empty rather than getting guessed.
+        assertEquals("9,aa:aa:aa:aa:aa:aa,,4,1,false", lines[2])
+    }
+
+    @Test
     fun dronesCsvWritesDecimalCoordinatesOnlyWhenValid() {
         val rows = listOf(
             DeviceMessage.Rid(1, "aa:bb:cc:dd:ee:ff", "UAS-1", "OP-1", 512345678L, -123456789L,

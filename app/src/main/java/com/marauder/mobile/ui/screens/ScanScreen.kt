@@ -88,7 +88,7 @@ enum class ApSort(val label: String) {
 fun ScanScreen(
     vm: MarauderViewModel,
     onBack: () -> Unit,
-    onOpenAp: (Int) -> Unit,
+    onOpenAp: (String) -> Unit,
     onOpenMission: (Long) -> Unit,
 ) {
     val aps by vm.aps.collectAsState()
@@ -195,11 +195,11 @@ fun ScanScreen(
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(visible, key = { it.index }) { ap ->
+                        items(visible, key = { it.bssid }) { ap ->
                             ApCard(
                                 ap = ap,
                                 eapol = ap.eapolCount(eapolByMac),
-                                onClick = { onOpenAp(ap.index) },
+                                onClick = { onOpenAp(ap.bssid) },
                             )
                         }
                     }
