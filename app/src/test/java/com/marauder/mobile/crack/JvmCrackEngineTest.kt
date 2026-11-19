@@ -100,6 +100,20 @@ class JvmCrackEngineTest {
         assertTrue(sawProgress)
         assertNotNull(finished)
         assertEquals(false, finished!!.completed)
+        // The word this engine had already read from the file is the price the screen must not count:
+        // TRIED is guesses hashed, and the JVM engine stops at word granularity, so exactly one line
+        // was read and left unhashed. A stop that reports nothing here makes the count uncheckable.
+        assertTrue("a stopped run must report what it left unhashed", finished!!.discardedWords >= 1)
+    }
+
+    @Test
+    fun anExhaustedRunReportsNothingLeftUnhashed() = runBlocking {
+        val engine = JvmCrackEngine()
+        val list = wordlist("nope", "password")
+        val events = engine.run(CrackConfig(hashLines = listOf(pmkidLine), wordlists = listOf(list))).toList()
+        val finished = events.filterIsInstance<CrackEvent.Finished>().single()
+        assertTrue(finished.completed)
+        assertEquals(0, finished.discardedWords)
     }
 
     @Test

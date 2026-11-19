@@ -111,6 +111,7 @@ class NativeGpuCrackEngine : CrackEngine {
         var done = 0L
         val meter = RateMeter()
         var stopped = false
+        var discarded = 0                     // words read into a batch but never hashed
         var gpuFailed: String? = null
 
         outer@ for (list in lists) {
@@ -125,7 +126,10 @@ class NativeGpuCrackEngine : CrackEngine {
 
                     currentCoroutineContext().ensureActive()
                     if (stopRequested.get()) {
+                        // A stop can only be noticed between batches, and a GPU batch is the unit the
+                        // driver was handed: the words already read are reported, never counted as tried.
                         stopped = true
+                        discarded = batch.size
                         break
                     }
 
@@ -170,7 +174,7 @@ class NativeGpuCrackEngine : CrackEngine {
         // The run average, not the last window: an ETA needs a rate that does not jump
         // every time the device throttles.
         emit(CrackEvent.Progress(done, totalWords, meter.overall()))
-        emit(CrackEvent.Finished(completed = !stopped))
+        emit(CrackEvent.Finished(completed = !stopped, discardedWords = discarded))
     }.flowOn(Dispatchers.Default)
 
     override fun stop() {

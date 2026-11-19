@@ -79,6 +79,7 @@ class JvmCrackEngine : CrackEngine {
         var done = 0L
         val meter = RateMeter()
         var stopped = false
+        var discarded = 0
 
         outer@ for (list in lists) {
             list.bufferedReader().use { reader ->
@@ -87,7 +88,11 @@ class JvmCrackEngine : CrackEngine {
                     if (word.isEmpty()) continue
                     currentCoroutineContext().ensureActive()
                     if (stopRequested.get()) {
+                        // This engine stops at word granularity, so exactly the line just read is left
+                        // unhashed. It is still reported: a count of guesses tried must be a count of
+                        // guesses paid for.
                         stopped = true
+                        discarded = 1
                         break
                     }
 
@@ -115,7 +120,7 @@ class JvmCrackEngine : CrackEngine {
         // The run's average is steadier than the last window, and an ETA needs a
         // rate that does not jump every time the phone throttles.
         emit(CrackEvent.Progress(done, totalWords, meter.overall()))
-        emit(CrackEvent.Finished(completed = !stopped))
+        emit(CrackEvent.Finished(completed = !stopped, discardedWords = discarded))
     }.flowOn(Dispatchers.Default)
 
     override fun stop() {

@@ -16,6 +16,7 @@ import com.marauder.mobile.data.KeyManagement
 import com.marauder.mobile.data.Wordlist
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,6 +51,19 @@ data class CrackUiState(
     val running: Boolean = false,
     val doneGuesses: Long = 0L,
     val totalGuesses: Long = 0L,
+
+    /**
+     * The stop was asked for and the engine is still finishing the unit it had already been handed
+     * (a GPU batch is not interruptible from the UI). Reported rather than hidden, because the run
+     * looks frozen while it happens.
+     */
+    val stopping: Boolean = false,
+
+    /** This run ended because the user stopped it, not because the lists ran out. */
+    val stopped: Boolean = false,
+
+    /** Words the engine had read out of a wordlist and never hashed; see [CrackEvent.Finished]. */
+    val discardedWords: Int = 0,
     val rate: Double = 0.0,
     val found: Map<Int, String> = emptyMap(),
     val exhausted: Boolean = false,
@@ -106,6 +120,9 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<CrackUiState> = _state.asStateFlow()
 
     private var runJob: Job? = null
+
+    /** Backstop for [stop]: ends the collector only if the engine never reports its own end. */
+    private var stopGrace: Job? = null
     private var pendingArtifact: String? = null
 
     /** Load the artifact's extracted hashes and the wordlist library. */
@@ -202,6 +219,9 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
             rate = 0.0,
             found = emptyMap(),
             exhausted = false,
+            stopping = false,
+            stopped = false,
+            discardedWords = 0,
             error = null,
         )
         runJob = viewModelScope.launch {
@@ -231,10 +251,16 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
                         pendingArtifact?.let { app.artifacts.markCracked(it, event.password) }
                     }
 
-                    is CrackEvent.Finished -> _state.value = _state.value.copy(
-                        running = false,
-                        exhausted = event.completed,
-                    )
+                    is CrackEvent.Finished -> {
+                        stopGrace?.cancel()
+                        stopGrace = null
+                        _state.value = _state.value.copy(
+                            running = false,
+                            stopping = false,
+                            exhausted = event.completed,
+                            discardedWords = event.discardedWords,
+                        )
+                    }
 
                     is CrackEvent.Error -> _state.value = _state.value.copy(error = event.message, running = false)
                 }
@@ -242,15 +268,43 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Asks the running engine to stop, and then lets it finish reporting.
+     *
+     * A stop is noticed at a batch boundary — a GPU batch is the unit the driver was already handed —
+     * so the run keeps working for a moment after the press, and the engine's `Finished` carries how
+     * many words it had read and chose not to hash. Cancelling the collector here, as this function
+     * used to do, threw that report away and left the screen holding a guess count whose meaning had
+     * quietly changed. So the press only asks: the engine's own events end the run, and [stopGrace] is
+     * the backstop for an engine that never reports at all.
+     */
     fun stop() {
+        val s = _state.value
+        if (!s.running || s.stopping) return
         activeEngine.stop()
-        runJob?.cancel()
-        runJob = null
-        _state.value = _state.value.copy(running = false)
+        _state.value = s.copy(stopping = true, stopped = true)
+        stopGrace?.cancel()
+        stopGrace = viewModelScope.launch {
+            delay(STOP_GRACE_MS)
+            if (_state.value.running) {
+                runJob?.cancel()
+                runJob = null
+                _state.value = _state.value.copy(running = false, stopping = false)
+            }
+        }
     }
 
     /** Wordlist files as the engine will see them (for the summary line). */
     fun selectedFiles(): List<File> = _state.value.selected.map { app.wordlists.store.file(it) }
+
+    private companion object {
+        /**
+         * How long a stopped run is allowed to take finishing the unit it was already handed. A GPU
+         * batch is a driver round-trip, so a couple of seconds is ordinary; past this the app stops
+         * waiting rather than reporting a run that is still going.
+         */
+        const val STOP_GRACE_MS = 8_000L
+    }
 
     override fun onCleared() {
         activeEngine.stop()

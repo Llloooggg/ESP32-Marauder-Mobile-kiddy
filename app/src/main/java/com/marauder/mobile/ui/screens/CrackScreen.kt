@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.marauder.mobile.crack.Backend
+import com.marauder.mobile.crack.Eta
 import com.marauder.mobile.crack.MeasuredRate
 import com.marauder.mobile.data.KeyManagement
 import com.marauder.mobile.data.Wordlist
@@ -295,6 +296,8 @@ fun CrackScreen(
                                 progress = { state.progress },
                                 modifier = Modifier.fillMaxWidth().height(7.dp),
                             )
+                            val remaining = state.totalGuesses - state.doneGuesses
+                            val eta = Eta.seconds(remaining, state.rate)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 StatChip("TRIED", formatCount(state.doneGuesses), MarauderCyan)
                                 StatChip(
@@ -304,12 +307,32 @@ fun CrackScreen(
                                 )
                                 StatChip(
                                     "ETA",
-                                    // Only meaningful once a rate sample exists and there is
-                                    // actually something left: "0s" reads like a bug.
-                                    if (state.rate > 0 && state.totalGuesses > state.doneGuesses) {
-                                        formatSeconds(((state.totalGuesses - state.doneGuesses) / state.rate).toLong())
-                                    } else "—",
+                                    // Only meaningful once a rate sample exists and there is actually
+                                    // something left: "0s" reads like a bug, and an ETA before the first
+                                    // window would be a guess with a clock next to it.
+                                    eta?.let { formatSeconds(it) } ?: "—",
                                     MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                if (state.stopping) {
+                                    // The press was heard; the engine is finishing the unit it was
+                                    // already handed. Silent here, and the run looks frozen.
+                                    StatChip("STOPPING", "finishing the batch in flight", Warning)
+                                }
+                            }
+                            // What the ETA rests on, next to it. A rate from an unmentioned window and a
+                            // time left nobody can divide are the same number twice.
+                            if (state.running && eta != null) {
+                                Text(
+                                    Eta.basis(remaining, state.rate),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MarauderTextDim,
+                                )
+                            }
+                            if (state.stopped && !state.running) {
+                                Text(
+                                    Eta.stopped(state.doneGuesses, state.discardedWords),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MarauderTextDim,
                                 )
                             }
                             if (state.exhausted && state.found.isEmpty()) {

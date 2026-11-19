@@ -99,6 +99,7 @@ class NativeCpuCrackEngine(
         var done = 0L
         val meter = RateMeter()
         var stopped = false
+        var discarded = 0                     // words read into a batch but never hashed
         var nativeFailed: String? = null
 
         outer@ for (list in lists) {
@@ -113,7 +114,10 @@ class NativeCpuCrackEngine(
 
                     currentCoroutineContext().ensureActive()
                     if (stopRequested.get()) {
+                        // A stop lands between batches, so the words already read out of the file are
+                        // paid for by the reader but not by PBKDF2: they are reported, not counted as tried.
                         stopped = true
+                        discarded = batch.size
                         break
                     }
 
@@ -157,7 +161,7 @@ class NativeCpuCrackEngine(
         // The run average, not the last window: an ETA needs a rate that does not jump
         // every time the phone throttles.
         emit(CrackEvent.Progress(done, totalWords, meter.overall()))
-        emit(CrackEvent.Finished(completed = !stopped))
+        emit(CrackEvent.Finished(completed = !stopped, discardedWords = discarded))
     }.flowOn(Dispatchers.Default)
 
     override fun stop() {

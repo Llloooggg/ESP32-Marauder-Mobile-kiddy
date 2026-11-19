@@ -14,8 +14,15 @@ sealed interface CrackEvent {
     /** A password was found for hash [hashIndex] (index into the config's hash list). */
     data class Found(val hashIndex: Int, val password: String) : CrackEvent
 
-    /** Engine finished (exhausted, stopped, or found). [completed] = wordlist exhausted with no crack. */
-    data class Finished(val completed: Boolean) : CrackEvent
+    /**
+     * Engine finished (exhausted, stopped, or found). [completed] = wordlist exhausted with no crack.
+     *
+     * [discardedWords] is how many words the engine had already read out of a wordlist and never
+     * hashed, which is only possible because the batch engines read a block of words before paying for
+     * it. It belongs in the event rather than in the UI: without it, a stopped run reports a guess
+     * count that the user will read as coverage of the list.
+     */
+    data class Finished(val completed: Boolean, val discardedWords: Int = 0) : CrackEvent
 
     data class Error(val message: String) : CrackEvent
 }
