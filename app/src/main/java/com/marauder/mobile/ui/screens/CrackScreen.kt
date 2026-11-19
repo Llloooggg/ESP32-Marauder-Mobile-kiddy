@@ -228,15 +228,21 @@ fun CrackScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Backend.entries.forEach { backend ->
+                            // Three equal columns, not three content-sized ones: the old row let the
+                            // first chip take as much width as its hint needed, and on a phone the
+                            // third one — GPU — was left with nothing and simply never appeared.
+                            // Each chip states only what it is; what *this* device can honour is said
+                            // underneath, in `engineReport` and in the sentence AUTO settled on.
                             Choice(
                                 label = backend.name,
                                 hint = when (backend) {
-                                    Backend.AUTO -> "graphics cores when the driver proves them"
+                                    Backend.AUTO -> "GPU if proven"
                                     Backend.CPU -> "phone cores"
                                     Backend.GPU -> "graphics cores"
                                 },
                                 selected = state.backend == backend,
                                 onClick = { cvm.setBackend(backend) },
+                                modifier = Modifier.weight(1f),
                             )
                         }
                     }
@@ -467,12 +473,19 @@ private fun WordlistPick(list: Wordlist, order: Int?, onToggle: () -> Unit) {
 }
 
 @Composable
-private fun Choice(label: String, hint: String, selected: Boolean, onClick: () -> Unit) {
+private fun Choice(
+    label: String,
+    hint: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val tint = if (selected) MarauderCyan else MaterialTheme.colorScheme.onSurfaceVariant
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(10.dp),
         color = tint.copy(alpha = if (selected) 0.16f else 0.06f),
+        modifier = modifier,
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             Text(label, style = MaterialTheme.typography.labelLarge, color = tint, fontWeight = FontWeight.Bold)
