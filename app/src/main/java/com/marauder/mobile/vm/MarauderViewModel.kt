@@ -9,7 +9,10 @@ import com.marauder.mobile.data.AnalyzerKind
 import com.marauder.mobile.data.ArtifactRecord
 import com.marauder.mobile.data.ArtifactsRepository
 import com.marauder.mobile.data.GpxAssembler
+import com.marauder.mobile.data.DeviceInfoForJournal
 import com.marauder.mobile.data.HashExtractResult
+import com.marauder.mobile.data.JournalEntry
+import com.marauder.mobile.data.ListCsv
 import com.marauder.mobile.data.ListType
 import com.marauder.mobile.data.LiveClassifier
 import com.marauder.mobile.data.NmeaAssembler
@@ -208,6 +211,9 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     private var wardriving = false
     private val wardriveSeen = HashSet<String>()
 
+    /** Credentials the portal caught this session (kept so they can be saved as CSV). */
+    private val credsSeen = mutableListOf<DeviceMessage.Cred>()
+
     // Phone-GPS activities (each runs while its live screen is open; the SD-less
     // board has no GPS module, so these are served from the phone's own GNSS).
     private var gpsData = false      // gpsdata / nmea live console
@@ -397,6 +403,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         kind: MissionKind,
         preCommands: List<String> = emptyList(),
         stopOnIdle: Boolean = true,
+        target: MissionTarget? = null,
     ): Boolean {
         if (usb.status.value != UsbSerialManager.Status.CONNECTED) return false
         if (_activeMission.value?.done == false) stopMission()
@@ -426,9 +433,41 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             command = cmd,
             startedAt = System.currentTimeMillis(),
             stopOnIdle = stopOnIdle,
+            target = target,
         )
+        journalMission("start", title, cmd, kind, target)
         startMissionPolling(cmd)
         return true
+    }
+
+    /** Journal line for a mission boundary (start/stop) with its counters. */
+    private fun journalMission(
+        event: String,
+        title: String,
+        command: String,
+        kind: MissionKind,
+        target: MissionTarget?,
+        m: Mission? = null,
+    ) {
+        val meta = mutableMapOf(
+            "event" to event,
+            "command" to command,
+            "kind" to kind.name,
+        )
+        target?.let {
+            meta["target_essid"] = it.essid
+            meta["target_bssid"] = it.bssid
+            meta["target_channel"] = it.channel.toString()
+        }
+        if (m != null) {
+            meta["seconds"] = (((m.endedAt ?: System.currentTimeMillis()) - m.startedAt) / 1000L).toString()
+            meta["bytes"] = m.bytes.toString()
+            meta["eapol"] = m.eapolTotal.toString()
+            meta["gaps"] = m.missedFrames.toString()
+            meta["drops"] = m.ringDrops.toString()
+            m.artifactName?.let { meta["artifact"] = it }
+        }
+        artifacts.journal.record(JournalEntry.MISSION, "$event: $title", meta)
     }
 
     /** Stop the running mission (and finalize its capture, if any). */
@@ -492,6 +531,10 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             bytes = captureSink.bytes,
             missedFrames = captureSink.missedFrames,
         )
+        journalMission(
+            "stop", m.title, m.command, m.kind, m.target,
+            _activeMission.value ?: m,
+        )
     }
 
     /** Register a closed capture file as an artifact record; returns its name. */
@@ -530,6 +573,80 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     }
 
     // --- Artifacts ------------------------------------------------------------
+
+    /** Close the session journal (if open) and register it as a library artifact. */
+    private fun closeJournalAndRegister() {
+        artifacts.journal.close()?.let { artifacts.registerJournal(it) }
+    }
+
+    /**
+     * Build the session report (report.md + zip of journals, captures and hashes)
+     * off the main thread. Returns the archive file so the UI can share it.
+     */
+    suspend fun exportReport(): File? = withContext(Dispatchers.IO) {
+        closeJournalAndRegister()
+        val info = _info.value
+        val board = info?.let { DeviceInfoForJournal(it.board, it.fw, it.proto) }
+        artifacts.exportReport(appVersion(), board)?.archive
+    }
+
+    /** Version name of this build, for the report header. */
+    private fun appVersion(): String = try {
+        val pi = app.packageManager.getPackageInfo(app.packageName, 0)
+        "${pi.versionName} (${pi.longVersionCode})"
+    } catch (e: Exception) {
+        ""
+    }
+
+    /**
+     * Save the current structured list [type] as a CSV artifact in the library.
+     * Returns the artifact name (null when the list is empty or unwritable).
+     */
+    fun exportListArtifact(type: ListType): String? {
+        val out = when (type) {
+            ListType.ACCESS_POINTS -> CsvExport("Access points", "aps", ListCsv.aps(_aps.value), _aps.value.size)
+            ListType.STATIONS -> CsvExport("Clients", "stations", ListCsv.stations(_stations.value), _stations.value.size)
+            ListType.PROBES -> CsvExport("Probe requests", "probes", ListCsv.probes(_probes.value), _probes.value.size)
+            ListType.SSIDS -> CsvExport("SSIDs", "ssids", ListCsv.ssids(_ssids.value), _ssids.value.size)
+            ListType.IPS -> CsvExport("Hosts", "hosts", ListCsv.ips(_ips.value), _ips.value.size)
+            ListType.AIRTAGS -> CsvExport("Trackers", "trackers", ListCsv.airtags(_airtags.value), _airtags.value.size)
+            ListType.DRONES -> CsvExport("Remote ID drones", "drones", ListCsv.drones(_drones.value), _drones.value.size)
+            ListType.GEOFENCES -> CsvExport(
+                "Geofences", "geofences", ListCsv.geofences(_geofences.value), _geofences.value.size,
+            )
+        }
+        if (out.rows == 0) {
+            _snackbar.tryEmit("Nothing in this list to save")
+            return null
+        }
+        val record = artifacts.writeCsvArtifact(out.title, out.base, out.csv, out.rows)
+        return if (record == null) {
+            _snackbar.tryEmit("Could not write ${out.title} CSV")
+            null
+        } else {
+            _snackbar.tryEmit("${out.title} saved: ${record.name} (${out.rows} rows)")
+            record.name
+        }
+    }
+
+    /** Save the credentials the portal caught this session as a CSV artifact. */
+    fun exportCredsArtifact(): String? {
+        val creds = credsSeen.toList()
+        if (creds.isEmpty()) {
+            _snackbar.tryEmit("No credentials captured yet")
+            return null
+        }
+        val record = artifacts.writeCsvArtifact(
+            "Portal credentials (${creds.size})", "creds", ListCsv.creds(creds), creds.size,
+        )
+        if (record != null) artifacts.journal.record(
+            JournalEntry.NOTE, "saved ${creds.size} credential(s) to ${record.name}",
+        )
+        return record?.name
+    }
+
+    /** One prepared CSV export (title, file base name, content, row count). */
+    private data class CsvExport(val title: String, val base: String, val csv: String, val rows: Int)
 
     fun listArtifacts(): List<com.marauder.mobile.data.Artifact> = artifacts.store.list()
 
@@ -1004,8 +1121,9 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
                     "◈ ${msg.board} · fw ${msg.fw} · proto ${msg.proto} · [${msg.caps.joinToString(", ")}]",
                     LineKind.SYSTEM,
                 )
-                negotiateCapture(msg)
-                // The first time a board reports in, make the user accept the
+                closeJournalAndRegister()
+                artifacts.journal.open(DeviceInfoForJournal(msg.board, msg.fw, msg.proto))
+                negotiateCapture(msg)                // The first time a board reports in, make the user accept the
                 // authorised-use notice before any command can be sent.
                 if (!_termsAccepted.value) _termsVisible.value = true
             }
@@ -1040,6 +1158,10 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             is DeviceMessage.End -> commitList(msg.list)
             is DeviceMessage.Err -> {
                 appendConsole("✗ ${msg.cmd} ${msg.arg}".trim(), LineKind.ERROR)
+                artifacts.journal.record(
+                    JournalEntry.ERROR, "device error: ${msg.cmd}",
+                    mapOf("cmd" to msg.cmd, "arg" to msg.arg),
+                )
                 _snackbar.tryEmit("Device error: ${msg.cmd}")
             }
             is DeviceMessage.AnalyzerSample -> onSample(msg)
@@ -1051,6 +1173,11 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
                 _evilPortal.value = _evilPortal.value.copy(
                     creds = _evilPortal.value.creds + msg,
                 )
+                artifacts.journal.record(
+                    JournalEntry.CRED, "portal credential",
+                    mapOf("user" to msg.user, "pass" to msg.pass),
+                )
+                credsSeen.add(msg)
                 appendConsole("⚑ credential — ${msg.user} : ${msg.pass}", LineKind.OUTPUT)
             }
             is DeviceMessage.Unknown -> {}
@@ -1121,6 +1248,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         // them running; only drop the GNSS if nothing still needs it. Any partial
         // capture is still registered as an artifact — loss should not be silent.
         if (captureSink.isActive && !gpsTracking) endCapture()
+        closeJournalAndRegister()
         _activeMission.value = null
         wardriving = false
         maybeStopLocation()
@@ -1144,6 +1272,19 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     private fun appendConsole(text: String, kind: LineKind) {
         val entry = ConsoleEntry(consoleSeq++, text, kind)
         _console.value = (_console.value + entry).takeLast(MAX_CONSOLE)
+        journalConsole(text, kind)
+    }
+
+    /** Mirror the console into the session journal (commands and errors always kept). */
+    private fun journalConsole(text: String, kind: LineKind) {
+        when (kind) {
+            LineKind.INPUT -> artifacts.journal.record(
+                JournalEntry.COMMAND, text, mapOf("command" to text.removePrefix("> ").trim()),
+            )
+            LineKind.ERROR -> artifacts.journal.record(JournalEntry.ERROR, text)
+            LineKind.SYSTEM -> artifacts.journal.record(JournalEntry.NOTE, text)
+            LineKind.OUTPUT -> artifacts.journal.output(text)
+        }
     }
 
     companion object {

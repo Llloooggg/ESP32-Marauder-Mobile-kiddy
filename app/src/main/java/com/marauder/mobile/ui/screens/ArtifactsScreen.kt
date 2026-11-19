@@ -39,17 +39,20 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.marauder.mobile.data.Artifact
 import com.marauder.mobile.data.ArtifactRecord
+import com.marauder.mobile.ui.shareFile
 import com.marauder.mobile.ui.components.EmptyState
 import com.marauder.mobile.ui.components.StatChip
 import com.marauder.mobile.ui.theme.CatGps
@@ -59,6 +62,7 @@ import com.marauder.mobile.ui.theme.MarauderTextDim
 import com.marauder.mobile.ui.theme.Success
 import com.marauder.mobile.ui.theme.Warning
 import com.marauder.mobile.vm.MarauderViewModel
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -79,6 +83,28 @@ fun ArtifactsScreen(
     var items by remember { mutableStateOf<List<Artifact>>(emptyList()) }
     LaunchedEffect(Unit) { items = vm.listArtifacts() }
 
+    // Session report: build (md + zip of journals/captures/hashes) then hand it to
+    // another app. Building reads the whole library, so it runs off the UI thread.
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var building by remember { mutableStateOf(false) }
+    val doExport: () -> Unit = {
+        if (!building) {
+            building = true
+            vm.queueMessage("Building session report…")
+            scope.launch {
+                val file = vm.exportReport()
+                building = false
+                if (file == null) {
+                    vm.queueMessage("Could not build the report")
+                } else {
+                    items = vm.listArtifacts()
+                    if (!shareFile(context, file)) vm.queueMessage("Report saved: ${file.name}")
+                }
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -87,6 +113,9 @@ fun ArtifactsScreen(
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
                 },
                 actions = {
+                    IconButton(onClick = doExport) {
+                        Icon(Icons.Filled.Description, contentDescription = "Export report", tint = MarauderCyan)
+                    }
                     IconButton(onClick = onOpenWordlists) {
                         Icon(Icons.Filled.Storage, contentDescription = "Wordlists", tint = MarauderCyan)
                     }

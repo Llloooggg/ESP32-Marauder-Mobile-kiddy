@@ -43,10 +43,13 @@ data class Artifact(
  */
 class ArtifactStore(private val dir: File) {
 
+    /** The directory every capture/journal/report file lives in. */
+    val directory: File get() = dir
+
     private val indexFile = File(dir, ".artifacts-index.json")
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
     private val listSerializer = ListSerializer(ArtifactRecord.serializer())
-    private val knownExtensions = setOf("pcap", "gpx", "log", "csv")
+    private val knownExtensions = setOf("pcap", "gpx", "log", "csv", "jsonl", "zip")
 
     @Synchronized
     fun list(): List<Artifact> {
@@ -139,6 +142,13 @@ class ArtifactsRepository(context: Context) {
 
     val store: ArtifactStore = ArtifactStore(File(context.getExternalFilesDir(null), "captures"))
 
+    /**
+     * Timestamped log of each board session (commands, missions with counters,
+     * portal credentials, the board's own console text). One JSONL file per
+     * connection, kept next to the captures and pulled into the session report.
+     */
+    val journal: Journal = Journal(store.directory)
+
     /** Replaced by the build once the `:extractor` module is linked into the app. */
     var bridge: ExtractionBridge = UnwiredExtractionBridge
 
@@ -185,6 +195,114 @@ class ArtifactsRepository(context: Context) {
     fun markCracked(name: String, password: String) {
         store.get(name)?.let {
             store.setHashResult(name, it.record.hashState, it.record.note, mapOf("cracked" to password))
+        }
+    }
+
+    // --- Session journal ------------------------------------------------------
+
+    /** Register a closed journal file as an artifact so it lands in the library. */
+    fun registerJournal(s: JournalSummary) {
+        if (s.entries <= 0) return
+        store.upsert(
+            ArtifactRecord(
+                name = s.file.name,
+                createdAt = s.file.lastModified(),
+                title = "Session log (${s.entries} entries)",
+                kind = "jsonl",
+                meta = mapOf(
+                    "entries" to s.entries.toString(),
+                    "bytes" to s.file.length().toString(),
+                    "truncated" to s.truncated.toString(),
+                ),
+            ),
+        )
+    }
+
+    /** Every journal file on disk, newest first. */
+    fun journalFiles(): List<File> =
+        store.directory.listFiles()?.filter { it.isFile && it.extension == "jsonl" }
+            ?.sortedByDescending { it.lastModified() }
+            ?: emptyList()
+
+    /** All journal entries from [files] (capped), oldest first. */
+    fun journalEntries(files: List<File>, limit: Int = 4000): List<JournalEntry> {
+        val all = files.flatMap { journal.read(it) }
+        return if (all.size <= limit) all.sortedBy { it.at }
+        else all.sortedBy { it.at }.take(limit)
+    }
+
+    // --- Session report ------------------------------------------------------
+
+    /**
+     * Build the self-audit report: `report.md` plus a zip holding it, the raw
+     * journals, every artifact and its extracted hashes. The archive is
+     * registered as an artifact itself so it can be shared from the library.
+     */
+    fun exportReport(appVersion: String, board: DeviceInfoForJournal?): ReportResult? {
+        val journals = journalFiles()
+        val artifacts = store.list()
+        val input = ReportInput(
+            appVersion = appVersion,
+            board = board,
+            journal = journalEntries(journals),
+            artifacts = artifacts.map {
+                ReportArtifact(
+                    name = it.record.name,
+                    title = it.record.title,
+                    kind = it.record.kind,
+                    createdAt = it.record.createdAt,
+                    bytes = it.file.length(),
+                    hashState = it.record.hashState,
+                    meta = it.record.meta,
+                )
+            },
+            files = artifacts.associate { it.record.name to it.file },
+            hashSidecars = artifacts
+                .filter { it.record.hashState == ArtifactRecord.HASH_DONE }
+                .map { it.record.name to store.hashFileFor(it.record.name) }
+                .toMap(),
+            journals = journals,
+        )
+        val markdown = ReportBuilder.markdown(input)
+        val dir = store.directory
+        var i = 0
+        var target: File
+        do { target = File(dir, "report_$i.zip"); i++ } while (target.exists())
+        val result = ReportBuilder.writeZip(target, input, markdown) ?: return null
+        runCatching {
+            File(dir, target.name.removeSuffix(".zip") + ".md").writeText(markdown)
+        }
+        store.upsert(
+            ArtifactRecord(
+                name = target.name,
+                createdAt = System.currentTimeMillis(),
+                title = "Session report (${result.entries} files)",
+                kind = "zip",
+                meta = mapOf("bytes" to target.length().toString(), "files" to result.entries.toString()),
+            ),
+        )
+        return result
+    }
+
+    /** Write [text] as a CSV artifact in the library; returns its record. */
+    fun writeCsvArtifact(title: String, baseName: String, text: String, rows: Int): ArtifactRecord? {
+        return try {
+            store.directory.mkdirs()
+            var i = 0
+            var f: File
+            do { f = File(store.directory, "${baseName}_$i.csv"); i++ } while (f.exists())
+            f.writeText(text)
+            val record = ArtifactRecord(
+                name = f.name,
+                createdAt = System.currentTimeMillis(),
+                title = title,
+                kind = "csv",
+                meta = mapOf("rows" to rows.toString(), "bytes" to f.length().toString()),
+            )
+            store.upsert(record)
+            record
+        } catch (e: Exception) {
+            null
         }
     }
 }

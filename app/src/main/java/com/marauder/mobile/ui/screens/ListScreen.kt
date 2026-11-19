@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -34,6 +35,9 @@ fun ListScreen(
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
                 },
                 actions = {
+                    IconButton(onClick = { vm.exportListArtifact(type) }) {
+                        Icon(Icons.Filled.SaveAlt, contentDescription = "Save as CSV", tint = MarauderCyan)
+                    }
                     IconButton(onClick = { vm.refreshList(type) }) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = MarauderCyan)
                     }

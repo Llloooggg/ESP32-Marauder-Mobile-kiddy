@@ -5,6 +5,9 @@ import com.marauder.mobile.data.LiveClassifier
 /** What a running mission is doing — drives icons, counters and stop semantics. */
 enum class MissionKind { SCAN, SNIFF, CAPTURE, ATTACK, WARDRIVE, HUNT, PORTAL, OTHER }
 
+/** The network a mission is pointed at (recorded in the mission and the session log). */
+data class MissionTarget(val essid: String, val bssid: String, val channel: Int)
+
 /**
  * One live firmware activity the app started and supervises (scan, capture,
  * attack…). The ViewModel owns exactly one active mission; starting a new one
@@ -17,6 +20,8 @@ data class Mission(
     val kind: MissionKind,
     val command: String,
     val startedAt: Long,
+    /** The AP this mission is pointed at, when the UI picked one. */
+    val target: MissionTarget? = null,
     /** Mark the mission finished once jsonstatus reports the firmware idle. */
     val stopOnIdle: Boolean = true,
     /** Bytes streamed into the capture file (CAPTURE/WARDRIVE only). */

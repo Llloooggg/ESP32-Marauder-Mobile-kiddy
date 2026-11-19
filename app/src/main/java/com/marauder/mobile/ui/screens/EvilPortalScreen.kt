@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Router
+import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.WarningAmber
@@ -61,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import com.marauder.mobile.protocol.DeviceMessage
 import com.marauder.mobile.ui.components.EmptyState
 import com.marauder.mobile.ui.theme.Danger
+import com.marauder.mobile.ui.theme.MarauderCyan
 import com.marauder.mobile.ui.theme.MarauderTextDim
 import com.marauder.mobile.ui.theme.Success
 import com.marauder.mobile.ui.theme.Warning
@@ -101,6 +103,11 @@ fun EvilPortalScreen(vm: MarauderViewModel, onBack: () -> Unit) {
                     }
                 },
                 actions = {
+                    if (state.creds.isNotEmpty()) {
+                        IconButton(onClick = { vm.exportCredsArtifact() }) {
+                            Icon(Icons.Filled.SaveAlt, contentDescription = "Save credentials as CSV", tint = MarauderCyan)
+                        }
+                    }
                     if (state.phase == EvilPortalUiState.Phase.Running) {
                         IconButton(onClick = { vm.stopEvilPortal() }) {
                             Icon(Icons.Filled.Stop, contentDescription = "Stop", tint = Danger)
