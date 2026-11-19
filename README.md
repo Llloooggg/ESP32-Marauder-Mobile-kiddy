@@ -103,6 +103,12 @@ is plugged in.
 
 ## Features
 
+- 🧭 **Playbooks — the reason this build is called `kiddy`** — thirteen guided jobs
+  ("get a handshake from one network and crack it", "wardrive the area", "evil portal
+  with a page from the phone", "find the box physically"). Each one shows its steps, the
+  firmware command behind every step, and what it produces afterwards; a job that
+  addresses one network takes that network's live slot and channel from the board's
+  current scan list when Run is pressed, and refuses to start if a value is missing.
 - 📡 Full WiFi suite — sniffers, scanners, and attacks with live counters.
 - 🔵 Bluetooth — BLE sniffers, AirTag detection, and BLE spam tools.
 - 🛰️ GPS — data, NMEA stream, tracker, and points of interest.
@@ -124,6 +130,20 @@ is plugged in.
 - 🎯 **Target-pinned operations** — every targeted capture is bound to a BSSID
   checked against the scan ledger before anything is transmitted, and each
   capture records which BSSID it was aimed at.
+- 🧾 **The firmware's whole command surface, and a test that keeps it that way** —
+  `FirmwareCommands` is the census of every verb the board answers (63 CLI verbs from
+  `CommandLine.h` plus the 5 JSON helpers), each with the syntax copied out of the
+  firmware's own help strings, and `FirmwareCoverageTest` fails if any of them stops
+  being reachable from the UI. Verbs that need a list index (`spoofat -t`, `findmy -t`,
+  `foxhunt -b/-t/-f`, `karma -p`, `ssid -r`, `geofence clear`, `remoteid track`,
+  `csimotion start`, `add -a -b`) prompt for it, show the exact command before sending
+  it, and name the list the index comes from (`list -b`, the probe list, the IP list).
+  Verbs the firmware has commented out (`scansta`, `btwardrive`, …) are never sent.
+- 🎛️ **Board settings, read back** — the firmware's own switches (`ChanHop`,
+  `SavePCAP`, `ForcePMKID`, `EPDeauth`, …) are listed from its `settings` dump and
+  written with `settings -s <key> enable|disable`; only boolean settings are editable,
+  because that is all the CLI accepts, and every write is followed by a fresh read, so
+  a change the board did not apply is reported as failed.
 - 🔐 **WPA3-aware, honestly** — SAE-only networks are detected and reported as
   uncrackable by design (their PMK is not PBKDF2-derived) rather than burned
   through a wordlist.
@@ -142,6 +162,13 @@ is plugged in.
   into selected-only mode, where frames of every other AP are dropped before they
   are counted or buffered (the app deselects them and reads the list back to prove
   it). If the state cannot be proven, the capture is refused rather than started.
+  The same source-level check also says what *cannot* be fixed: only `sniffpmkid`
+  reads `-c` (every other scan verb goes through a dispatch path that ignores its
+  arguments), so the app pins those modes with `channel -s <n>` plus the gated hop
+  off — and for the modes whose hop loop is not gated at all (`scanall`, `sniffsae`,
+  `sniffpwn`, `sniffpinescan`, `sniffmultissid`) and for `sniffpmkid -d` without
+  `-l`, it says out loud that the board will walk the channels instead of letting a
+  wrong-channel capture look like an empty one.
 
 ## Protocol (firmware ↔ app)
 
