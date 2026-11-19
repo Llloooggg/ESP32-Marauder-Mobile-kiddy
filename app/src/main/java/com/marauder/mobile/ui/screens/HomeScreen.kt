@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeveloperBoard
@@ -108,6 +109,7 @@ fun HomeScreen(
     onOpenAbout: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenPosture: () -> Unit,
+    onOpenScenarios: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
     val connStatus by vm.status.collectAsState()
@@ -187,6 +189,13 @@ fun HomeScreen(
             item { SectionLabel("Get things done", modifier = Modifier.padding(top = 6.dp)) }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    BigAction(
+                        label = "Playbooks",
+                        hint = "guided jobs: capture · crack · wardrive · portal, one step at a time",
+                        icon = Icons.Filled.AutoStories,
+                        tint = MarauderCyan,
+                        onClick = onOpenScenarios,
+                    )
                     BigAction(
                         label = "Scan networks",
                         hint = "scanall · list every access point, then pick a target",

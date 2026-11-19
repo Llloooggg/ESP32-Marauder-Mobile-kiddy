@@ -61,6 +61,7 @@ import com.marauder.mobile.ui.screens.PostureScreen
 import com.marauder.mobile.ui.screens.SettingsScreen
 import com.marauder.mobile.ui.screens.MissionScreen
 import com.marauder.mobile.ui.screens.ScanScreen
+import com.marauder.mobile.ui.screens.ScenariosScreen
 import com.marauder.mobile.ui.screens.WordlistsScreen
 import com.marauder.mobile.usb.UsbSerialManager
 import com.marauder.mobile.vm.MarauderViewModel
@@ -89,6 +90,7 @@ private object Routes {
     const val SETTINGS = "settings"
     const val BOARD_SETTINGS = "board_settings"
     const val POSTURE = "posture"
+    const val SCENARIOS = "scenarios"
     const val FLASH = "flash"
     const val EVIL_PORTAL = "evil_portal_screen"
 
@@ -175,6 +177,7 @@ fun AppRoot() {
                     onOpenAbout = { nav.navigate(Routes.ABOUT) },
                     onOpenSettings = { nav.navigate(Routes.SETTINGS) },
                     onOpenPosture = { nav.navigate(Routes.POSTURE) },
+                    onOpenScenarios = { nav.navigate(Routes.SCENARIOS) },
                     onDisconnect = { vm.disconnect() },
                 )
             }
@@ -315,6 +318,24 @@ fun AppRoot() {
                 BoardSettingsScreen(vm = vm, onBack = { nav.popBackStack() })
             }
 
+            composable(Routes.SCENARIOS) {
+                ScenariosScreen(
+                    vm = vm,
+                    onBack = { nav.popBackStack() },
+                    // A playbook that hands over to a guided screen routes exactly like the
+                    // catalog entry for that screen would.
+                    onNavigate = { action -> handleScenarioNav(action, nav, vm) },
+                    // The mission card on Home is where a started playbook run is watched, so
+                    // going back to Home also shows the running mission right away.
+                    onStarted = {
+                        nav.navigate(Routes.HOME) {
+                            popUpTo(Routes.HOME)
+                            launchSingleTop = true
+                        }
+                    },
+                )
+            }
+
             composable(Routes.FLASH) {
                 FlashScreen(vm = vm, onBack = { nav.popBackStack() })
             }
@@ -427,5 +448,32 @@ private fun handleAction(
         MenuAction.OpenEvilPortal -> nav.navigate(Routes.EVIL_PORTAL)
         MenuAction.OpenPosture -> nav.navigate(Routes.POSTURE)
         MenuAction.OpenBoardSettings -> nav.navigate(Routes.BOARD_SETTINGS)
+        MenuAction.OpenScenarios -> nav.navigate(Routes.SCENARIOS)
+        MenuAction.OpenArtifacts -> nav.navigate(Routes.ARTIFACTS)
+    }
+}
+
+/**
+ * Routing for a playbook that hands over to a guided screen instead of running a command.
+ * Same destinations as the catalog entries, chosen from the playbook rather than the menu tree.
+ */
+private fun handleScenarioNav(
+    action: MenuAction,
+    nav: NavHostController,
+    vm: MarauderViewModel,
+) {
+    when (action) {
+        is MenuAction.Submenu -> nav.navigate(Routes.menu(action.id))
+        is MenuAction.OpenList -> {
+            vm.refreshList(action.type)
+            nav.navigate(Routes.list(action.type))
+        }
+        MenuAction.OpenEvilPortal -> nav.navigate(Routes.EVIL_PORTAL)
+        MenuAction.OpenPosture -> nav.navigate(Routes.POSTURE)
+        MenuAction.OpenBoardSettings -> nav.navigate(Routes.BOARD_SETTINGS)
+        MenuAction.OpenArtifacts -> nav.navigate(Routes.ARTIFACTS)
+        // A playbook never navigates to itself or to a command that needs an argument.
+        MenuAction.OpenScenarios, MenuAction.OpenConsole, MenuAction.OpenFlash, is MenuAction.Send,
+        is MenuAction.OpenAnalyzer, is MenuAction.Arg -> Unit
     }
 }

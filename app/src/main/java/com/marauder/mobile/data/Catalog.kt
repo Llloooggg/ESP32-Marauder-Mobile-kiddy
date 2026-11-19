@@ -2,6 +2,7 @@ package com.marauder.mobile.data
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.BarChart
@@ -137,6 +138,13 @@ sealed interface MenuAction {
 
     /** Open the board's own settings screen (`settings` dump + boolean writes). */
     data object OpenBoardSettings : MenuAction
+
+    /** Open the guided playbooks: whole jobs written out step by step, each one showing
+     *  the firmware commands it runs and what it produces afterwards. */
+    data object OpenScenarios : MenuAction
+
+    /** Open the Library: the captures, logs and hash files this app has already saved. */
+    data object OpenArtifacts : MenuAction
 }
 
 data class MenuItem(
@@ -184,6 +192,13 @@ object Catalog {
                 id = "main",
                 title = "Marauder",
                 items = listOf(
+                    MenuItem(
+                        "Playbooks",
+                        "Whole jobs, step by step, with the firmware commands shown",
+                        Icons.Filled.AutoStories,
+                        Accent.PRIMARY,
+                        MenuAction.OpenScenarios,
+                    ),
                     MenuItem("WiFi", "Sniffers · Scanners · Attacks", Icons.Filled.Wifi, Accent.WIFI, MenuAction.Submenu("wifi")),
                     MenuItem("Bluetooth", "Sniffers · Attacks", Icons.Filled.Bluetooth, Accent.BLUETOOTH, MenuAction.Submenu("bluetooth")),
                     MenuItem("GPS", "Data · NMEA · Tracker · POI", Icons.Filled.MyLocation, Accent.GPS, MenuAction.Submenu("gps")),

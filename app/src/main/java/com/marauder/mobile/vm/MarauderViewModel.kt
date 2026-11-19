@@ -22,6 +22,10 @@ import com.marauder.mobile.data.ListType
 import com.marauder.mobile.data.LiveClassifier
 import com.marauder.mobile.data.NmeaAssembler
 import com.marauder.mobile.data.ScanLedger
+import com.marauder.mobile.data.Scenario
+import com.marauder.mobile.data.ScenarioMode
+import com.marauder.mobile.data.ScenarioRun
+import com.marauder.mobile.data.Scenarios
 import com.marauder.mobile.data.TargetLock
 import com.marauder.mobile.data.WardriveAssembler
 import com.marauder.mobile.data.Wordlist
@@ -416,6 +420,87 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     /** The id the next console entry will get — capture before [startLiveActivity]
      *  so a live screen can show only the output produced by its own command. */
     fun consoleMark(): Long = consoleSeq
+
+    // --- Guided playbooks ------------------------------------------------------
+
+    /**
+     * Start a playbook ([Scenario]) the user picked on the Scenarios screen.
+     *
+     * The recipe itself lives in [Scenarios] as text plus the firmware's own commands; this
+     * is where it becomes a live mission, and the two rules that matter are:
+     *
+     *  * the `{ap}`/`{ch}` placeholders are resolved from the **live** scan list
+     *    ([ScanLedger.pin]) at the moment of pressing Run, because a slot remembered from an
+     *    earlier scan addresses a different network;
+     *  * anything still unresolved means the playbook cannot run, and it is refused instead
+     *    of being sent with a hole in it.
+     *
+     * A playbook whose [Scenario.run] is [ScenarioRun.PINNED_MISSION] goes through
+     * [startPinnedMission], so the selection is written *and read back* before the first
+     * frame goes out. [ScenarioRun.NAVIGATE] playbooks are routed by the UI instead.
+     */
+    fun runScenario(scenario: Scenario, bssid: String?): Boolean {
+        if (usb.status.value != UsbSerialManager.Status.CONNECTED) {
+            _snackbar.tryEmit("Connect a board first")
+            return false
+        }
+        if (scenario.run == ScenarioRun.NAVIGATE) {
+            // These hand over to a guided screen; nothing to send here.
+            return false
+        }
+        if (scenario.command.isBlank()) {
+            appendConsole("✗ `${scenario.title}` has no command to run — open it to see its steps", LineKind.ERROR)
+            return false
+        }
+
+        val pin: ScanLedger.ApPin? = if (Scenarios.needsTarget(scenario)) {
+            if (bssid == null) {
+                _snackbar.tryEmit("Pick the network this playbook should run against")
+                return false
+            }
+            val found = ledger.pin(bssid)
+            if (found == null) {
+                refusePin(bssid, "the board's current scan list does not contain $bssid — rescan and pick the network again")
+                return false
+            }
+            found
+        } else {
+            null
+        }
+
+        val command = Scenarios.instantiate(scenario.command, pin?.index, pin?.channel ?: 0)
+        val leftOver = Scenarios.placeholders(command)
+        if (leftOver.isNotEmpty()) {
+            appendConsole(
+                "✗ not started: `${scenario.title}` still needs ${leftOver.joinToString()} — " +
+                    "the app will not send a command with a hole in it",
+                LineKind.ERROR,
+            )
+            _snackbar.tryEmit("Playbook needs a network first")
+            return false
+        }
+
+        val kind = missionKindOf(scenario.mode)
+        return when (scenario.run) {
+            ScenarioRun.PINNED_MISSION ->
+                // bssid is non-null here: such a playbook needs a target, resolved above.
+                startPinnedMission(scenario.title, command, kind, checkNotNull(bssid))
+
+            ScenarioRun.MISSION -> startMission(
+                title = scenario.title,
+                command = command,
+                kind = kind,
+                preCommands = scenario.pre,
+                target = pin?.let { MissionTarget(it.essid, it.bssid, it.channel) },
+            )
+
+            ScenarioRun.NAVIGATE -> false
+        }
+    }
+
+    /** [ScenarioMode] and [MissionKind] are kept name-for-name; the test pins that. */
+    private fun missionKindOf(mode: ScenarioMode): MissionKind =
+        MissionKind.values().firstOrNull { it.name == mode.name } ?: MissionKind.OTHER
 
     // --- Board settings (`settings`, plain text, not JSON) ----------------------
 
