@@ -340,6 +340,19 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
 
     private var consoleSeq = 0L
     private var sessionJob: Job? = null
+    /**
+     * Set while the port is open but the board has not answered a single question, with the sentence
+     * that says what was asked and what could make a port mute. Null the moment any line arrives, and
+     * on disconnect. This is the one board fact worth reporting before the first answer: without it
+     * the UI's only statement is "Connected", which describes the phone's USB stack and says nothing
+     * about the board.
+     *
+     * Declared up here, next to [silenceJob], rather than beside the code that explains it: the
+     * connection collector in `init` clears it on teardown, and Kotlin initialises properties in
+     * declaration order — a field that is below the collector is still null when that collector runs.
+     */
+    private val _boardSilence = MutableStateFlow<String?>(null)
+    val boardSilence: StateFlow<String?> = _boardSilence.asStateFlow()
     private var silenceJob: Job? = null
 
     /**
@@ -386,13 +399,24 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             aps.collect { if (wardriving) onWardriveAps(it) }
         }
         viewModelScope.launch {
+            // `usb.status` is a StateFlow: collecting it replays how the link looked *before this
+            // collector existed*. A cold start with no cable is therefore handed to us as
+            // DISCONNECTED, and that is not an event — it is a starting condition. Treating it as one
+            // ended a session that never started and cleared board state that was never read, and it
+            // reached teardown code while the constructor was still running (which is what made the
+            // app die on launch). So: only transitions seen while this collector is alive.
+            var observed: UsbSerialManager.Status? = null
             usb.status.collect { st ->
+                val was = observed
+                observed = st
                 when (st) {
                     UsbSerialManager.Status.CONNECTED -> startSession()
                     UsbSerialManager.Status.DISCONNECTED -> {
+                        if (was == null || was == UsbSerialManager.Status.DISCONNECTED) return@collect
                         sessionJob?.cancel()
                         onDisconnected()
                     }
+
                     else -> {}
                 }
             }
@@ -671,16 +695,6 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
      * and looks like an empty night.
      */
     val boardChannel: StateFlow<Int?> = _boardChannel.asStateFlow()
-
-    /**
-     * Set while the port is open but the board has not answered a single question, with the sentence
-     * that says what was asked and what could make a port mute. Null the moment any line arrives, and
-     * on disconnect. This is the one board fact worth reporting before the first answer: without it
-     * the UI's only statement is "Connected", which describes the phone's USB stack and says nothing
-     * about the board.
-     */
-    private val _boardSilence = MutableStateFlow<String?>(null)
-    val boardSilence: StateFlow<String?> = _boardSilence.asStateFlow()
 
     private var channelSink: StringBuilder? = null
     private var channelArmed = false
