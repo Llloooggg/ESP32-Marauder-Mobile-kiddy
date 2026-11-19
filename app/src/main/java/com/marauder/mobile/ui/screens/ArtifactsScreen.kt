@@ -221,7 +221,12 @@ private fun HashStateChip(record: ArtifactRecord) {
             val lines = record.meta["hashLines"] ?: "?"
             StatChip("HASHES", lines, Success)
         }
-        ArtifactRecord.HASH_FAIL -> StatChip("NO HASHES", "", Danger)
+        ArtifactRecord.HASH_FAIL ->
+            // Two different empties say different things. A file with no frames at all cannot be
+            // helped by a wordlist, a GPU or a longer run over the same bytes, so it must not wear
+            // the same chip as "frames were captured, no credential among them".
+            if (CaptureDiagnosis.noFrames(record.meta)) StatChip("NO FRAMES", "", Danger)
+            else StatChip("NO HASHES", "", Danger)
         else -> StatChip("NOT ANALYSED", "", MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

@@ -65,6 +65,19 @@ object CaptureDiagnosis {
     const val META_EAPOL_FROM_AP = "eapol_ap"
     const val META_EAPOL_RETRIED = "eapol_retry"
     const val META_EAPOL_AP_EMPTY = "ap_empty"
+    const val META_FRAMES = "frames"
+
+    /**
+     * True when the file holds no 802.11 frames at all - a pcap that is only its global header. This
+     * is a different emptiness from "frames, but no credential in them": no wordlist, no GPU and no
+     * longer run can read a frame out of a file that has none, so it has to be said in as many words.
+     * A count that is unknown (`null`) answers false: the app does not claim an empty capture it
+     * cannot read back.
+     */
+    fun noFrames(frames: Int?): Boolean = frames == 0
+
+    /** The same rule applied to a stored record's meta. */
+    fun noFrames(meta: Map<String, String>): Boolean = noFrames(meta[META_FRAMES]?.toIntOrNull())
 
     /**
      * True only when EAPOL was seen and the client side contributed nothing. A count that is unknown
@@ -102,6 +115,12 @@ object CaptureDiagnosis {
         }
         return if (r.usable) {
             "Capture holds ${r.pmkidCount} PMKID, ${r.handshakeSets} handshake(s) — ready to crack [$counts]"
+        } else if (r.frames == 0) {
+            // Named separately because the advice is different: nothing about the network, the
+            // wordlist or the hardware can help a file that contains no frames.
+            "The capture holds no 802.11 frames at all — the file is a pcap header with nothing after " +
+                "it. Nothing here can be cracked, and running the same capture longer is the only fix " +
+                "[$counts]"
         } else {
             "No crackable credential in this capture — ${r.note ?: "no PMKID or handshake"} [$counts]"
         }

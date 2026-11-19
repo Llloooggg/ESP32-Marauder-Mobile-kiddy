@@ -289,6 +289,15 @@ fun ArtifactDetailScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MarauderTextDim,
                 )
+                // The other case no cracker can be configured out of: no frames at all.
+                if (CaptureDiagnosis.noFrames(record.meta)) {
+                    Text(
+                        "and there is nothing here to work on: this file holds no 802.11 frames. " +
+                            "Only capturing again changes that.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Warning,
+                    )
+                }
                 // The case no cracker can be configured out of, said in as many words.
                 if (CaptureDiagnosis.eapolOnlyFromAp(record.meta)) {
                     Text(

@@ -104,4 +104,25 @@ class CaptureDiagnosisTest {
         assertTrue(line, line.contains("3 record(s) lost in transit (+120 B)"))
         assertTrue("a client did answer here: $line", !line.contains("not one from the client"))
     }
+
+    @Test
+    fun aFileWithNoFramesIsNotReportedAsACaptureWithoutCredential() {
+        // 24 bytes: the pcap global header and nothing else. The advice for this file is not
+        // "try another wordlist" or "check the hardware" - it is "capture again".
+        val r = HashExtractResult(0, 0, emptyList(), frames = 0, eapolFrames = 0)
+        val line = CaptureDiagnosis.explain(r)
+        assertTrue(line, line.contains("no 802.11 frames at all"))
+        assertTrue("no cracker advice may be implied: $line", !line.contains("No crackable credential"))
+    }
+
+    @Test
+    fun noFramesIsOnlyClaimedWhenTheCountIsActuallyZero() {
+        assertTrue(CaptureDiagnosis.noFrames(0))
+        assertFalse("one frame is a capture: ", CaptureDiagnosis.noFrames(1))
+        assertFalse("an unknown count is not an empty file: ", CaptureDiagnosis.noFrames(null))
+        assertTrue(CaptureDiagnosis.noFrames(mapOf(CaptureDiagnosis.META_FRAMES to "0")))
+        assertFalse(CaptureDiagnosis.noFrames(mapOf(CaptureDiagnosis.META_FRAMES to "591")))
+        assertFalse("a record written before this counter existed claims nothing: ", CaptureDiagnosis.noFrames(emptyMap()))
+        assertFalse(CaptureDiagnosis.noFrames(mapOf(CaptureDiagnosis.META_FRAMES to "not a number")))
+    }
 }
