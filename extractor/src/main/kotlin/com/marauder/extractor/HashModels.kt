@@ -83,6 +83,7 @@ data class ExtractReport(
     val m2Frames: Int = 0,      // client messages carrying MIC + SNonce
     val m3Frames: Int = 0,      // AP messages with MIC (ANonce source when M1 is missing)
     val m4Frames: Int = 0,      // client ACKs (no key material)
+    val m4EchoedNonce: Int = 0, // M4s that repeated the nonce: usable (hcxtools' E4)
     // Which side transmitted the EAPOL. A capture can hold hundreds of EAPOL frames and still be
     // worthless: if every one of them is FromDS (from an access point, usually retransmitted), the
     // client never answered and there is no handshake to rebuild. Saying this beats "0 pairs".

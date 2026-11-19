@@ -222,31 +222,27 @@ object CrackCore {
 
     /**
      * Where the supplicant nonce (SNonce) sits inside the stored EAPOL blob, most
-     * likely placement first. Two layouts occur, and they are not compatible:
+     * likely placement first:
      *
-     *  * the frame as it appears on air — the standard's KEY NONCE field at 49..81,
-     *    with Key IV/RSC/ID at 17..49 (that region is zero on CCMP handshakes). This
-     *    is what this app's own extractor stores, and these offsets were confirmed
-     *    byte by byte against a live access point's EAPOL frames;
-     *  * the form hashcat's own example 22000 line carries — SNonce at 17..49 and
-     *    zeros at 49..81. Checked independently of this code: recomputing that
-     *    line's MIC with the SNonce from 49..81 does not reproduce its MIC, while
-     *    17..49 reproduces it exactly.
+     *  * 17..49 — the KEY NONCE field. hashcat's own 22000 vector reproduces its MIC
+     *    from these bytes, and a live WPA2 capture agrees byte for byte;
+     *  * 49..81 — where lines produced by this app before version 1.4.17 kept the
+     *    nonce (an older, wrong belief). Those lines are still on phones, so they are
+     *    still accepted rather than left unverifiable.
      *
-     * Guessing wrong does not produce a wrong answer, it produces no answer: the MIC
-     * never matches, the password really is right, and nothing explains the miss. So
-     * every plausible placement is verified, and the blob's own bytes only decide
-     * which one is tried first.
+     * The blob's own bytes decide which placements are worth trying; getting this
+     * wrong does not produce a wrong answer, it produces no answer: the MIC never
+     * matches, the password really is right, and nothing explains the miss.
      */
     private fun snonceCandidates(eapol: ByteArray): List<ByteArray> {
-        val atNonceField = eapol.copyOfRange(49, 81)
-        val atIvField = eapol.copyOfRange(17, 49)
-        val ivEmpty = atIvField.all { it == 0.toByte() }
+        val atNonceField = eapol.copyOfRange(17, 49)
+        val atLegacyField = eapol.copyOfRange(49, 81)
         val nonceEmpty = atNonceField.all { it == 0.toByte() }
+        val legacyEmpty = atLegacyField.all { it == 0.toByte() }
         return when {
-            ivEmpty && !nonceEmpty -> listOf(atNonceField)               // raw capture
-            nonceEmpty && !ivEmpty -> listOf(atIvField)                  // hashcat example form
-            else -> listOf(atNonceField, atIvField)                      // both possible: standard first
+            legacyEmpty && !nonceEmpty -> listOf(atNonceField)          // the real layout
+            nonceEmpty && !legacyEmpty -> listOf(atLegacyField)         // a line older versions wrote
+            else -> listOf(atNonceField, atLegacyField)                 // both possible: real first
         }
     }
 

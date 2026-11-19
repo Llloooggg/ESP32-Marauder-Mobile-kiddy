@@ -70,16 +70,16 @@ class ExtractorTest {
      * Fixed part: fc, dur, addr1=bcast, addr2=BSSID, addr3=BSSID, seqctl(2), ts(8),
      * interval(2), caps(2).
      */
-    private fun beacon(ssid: ByteArray, ccmp: Boolean = true): ByteArray {
+    private fun beacon(ssid: ByteArray, ccmp: Boolean = true, bssid: ByteArray = apMac): ByteArray {
         val cipher = if (ccmp) "000fac04" else "000fac01"
-        return beaconWithRsn(ssid, rsnBody(akms = listOf("000fac02"), pairwise = listOf(cipher), group = cipher))
+        return beaconWithRsn(ssid, rsnBody(akms = listOf("000fac02"), pairwise = listOf(cipher), group = cipher), bssid)
     }
 
-    private fun beaconWithRsn(ssid: ByteArray, rsnBody: ByteArray): ByteArray {
+    private fun beaconWithRsn(ssid: ByteArray, rsnBody: ByteArray, bssid: ByteArray = apMac): ByteArray {
         val ie = ArrayList<Byte>()
         ie.add(0); ie.add(ssid.size.toByte()); ie.addAll(ssid.toList())
         ie.add(48); ie.add(rsnBody.size.toByte()); ie.addAll(rsnBody.toList())
-        val fixed = hexBytes("8000 0000") + ByteArray(6) { 0xFF.toByte() } + apMac + apMac +
+        val fixed = hexBytes("8000 0000") + ByteArray(6) { 0xFF.toByte() } + bssid + bssid +
             hexBytes("0000") + ByteArray(8) + hexBytes("6400 0100")
         return fixed + ie.toByteArray()
     }
@@ -119,16 +119,14 @@ class ExtractorTest {
     }
 
     /**
-     * EAPOL-Key descriptor as IEEE 802.11 lays it out, offsets counted from the EAPOL
-     * header start: version@0 type@1 body-length@2-3 descriptor-type@4 key-info@5-6
-     * key-length@7-8 replay@9-16 Key IV@17-32 Key RSC@33-40 Key ID@41-48
-     * KEY NONCE@49-80 Key MIC@81-96 key-data-length@97-98 key data@99.
+     * EAPOL-Key frame laid out the way hashcat's own 22000 vector lays it out (the
+     * known-answer line in CrackCoreTest proves the offsets; a live WPA2 capture
+     * agrees): version@0 type@1 body-length@2-3 descriptor-type@4 key-info@5-6
+     * key-length@7-8 replay@9-16 KEY NONCE@17-48 Key IV@49-64 Key RSC@65-72
+     * Key ID@73-80 Key MIC@81-96 key-data-length@97-98 key data@99.
      *
-     * The Key IV / RSC / ID region is filled with a recognisable non-zero pattern on
-     * purpose. The nonce is NOT at 17: reading it there produced 22000 lines whose
-     * "ANonce" was the IV, and such a line can never be cracked, whatever the password.
-     * Zero-filled fixtures hid that bug; a real capture of a live AP did not. If the
-     * offset regresses, the ANonce assertions below pick it up immediately.
+     * The IV/RSC/ID region stays empty on a CCMP handshake, as it does on air. Reading
+     * the nonce at 49 instead yields an ANonce of zeros — a line no password verifies.
      */
     private fun eapolKey(keyInfo: Int, replay: Long, nonce: ByteArray, body: ByteArray, mic: ByteArray? = null): ByteArray {
         require(nonce.size == 32)
@@ -140,16 +138,12 @@ class ExtractorTest {
         f[5] = (keyInfo ushr 8).toByte(); f[6] = keyInfo.toByte()
         f[7] = 0; f[8] = 16 // key length
         for (i in 0 until 8) f[9 + i] = (replay ushr (56 - 8 * i)).toByte()
-        for (i in 0 until 32) f[17 + i] = (0x40 + i).toByte() // Key IV + RSC + ID
-        System.arraycopy(nonce, 0, f, 49, 32)
+        System.arraycopy(nonce, 0, f, 17, 32)
         if (mic != null) System.arraycopy(mic, 0, f, 81, 16)
         f[97] = (body.size ushr 8).toByte(); f[98] = body.size.toByte()
         System.arraycopy(body, 0, f, 99, body.size)
         return f
     }
-
-    /** The recognisable IV/RSC/ID pattern [eapolKey] writes at 17..49. */
-    private val ivRegionHex = (0 until 32).joinToString("") { "%02x".format(0x40 + it) }
 
     /** 802.11 QoS DATA frame carrying an EAPOL-Key payload. fcLo=0x88, fcHi: 0x01 ToDS / 0x02 FromDS. */
     private fun dataEapol(eapol: ByteArray, fcLo: Int, fcHi: Int, addr1: ByteArray, addr2: ByteArray, withFcs: Boolean): ByteArray {
@@ -322,7 +316,7 @@ class ExtractorTest {
 
     @Test
     fun m2WithoutM1IsNotedNotCracked() {
-        val snonce = ByteArray(32)
+        val snonce = ByteArray(32) { (it + 9).toByte() }
         val m2 = eapolKey(keyInfo = 0x0102, replay = 14, nonce = snonce, body = m2Body(), mic = ByteArray(16))
         val pcap = PcapBuilder()
         pcap.frame(beacon(ssid))
@@ -335,13 +329,16 @@ class ExtractorTest {
 
     // --- the M1/M3/M4 identification trap --------------------------------------
     //
-    // M1 and M4 share the same key-info bits (Ack set, MIC clear). Taking an M4
-    // for an M1 was the classic way to end up with a capture of 100+ EAPOL frames
-    // that yields nothing crackable: the "ANonce" is a field of zeros.
+    // Classifying by "MIC clear" alone is what produced captures of 100+ EAPOL
+    // frames that yielded nothing: a client's M4 has a MIC and no nonce, and an
+    // access point's M1 has an ACK, an ANonce, and often no key data at all.
+    // hashcat's own vector plus hcxtools' rules settle both: ACK+INSTALL = M3,
+    // ACK = M1, SECURE = M4, and an "M2" whose body is exactly 95 bytes is an M4.
 
-    /** M4: Ack set, MIC clear, no nonce and no key data (it is a bare ACK). */
+    /** M4 as clients send it: SECURE + MIC, a 95-byte body, no nonce and no key data. */
     private fun m4Frame(replay: Long): ByteArray =
-        eapolKey(keyInfo = 0x0082, replay = replay, nonce = ByteArray(32), body = ByteArray(0))
+        eapolKey(keyInfo = 0x030a, replay = replay, nonce = ByteArray(32), body = ByteArray(0),
+            mic = ByteArray(16) { (it + 1).toByte() })
 
     @Test
     fun m4IsNeverUsedAsTheApMessage() {
@@ -369,11 +366,12 @@ class ExtractorTest {
 
     @Test
     fun m2WithOnlyAnM4ExplainsWhyNothingIsCrackable() {
+        val snonce = ByteArray(32) { (it + 13).toByte() }
         val pcap = PcapBuilder()
         pcap.frame(beacon(ssid))
         pcap.frame(dataEapol(m4Frame(2), fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true))
-        pcap.frame(dataEapol(eapolKey(keyInfo = 0x0102, replay = 2, nonce = ByteArray(32), body = m2Body(),
-            mic = ByteArray(16)), fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true))
+        pcap.frame(dataEapol(eapolKey(keyInfo = 0x0102, replay = 2, nonce = snonce, body = m2Body(),
+            mic = ByteArray(16) { (it + 2).toByte() }), fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true))
 
         val rep = run(pcap.bytes())
         assertEquals(0, rep.hashes.size)
@@ -393,8 +391,8 @@ class ExtractorTest {
         val m2 = eapolKey(keyInfo = 0x0102, replay = 1, nonce = snonce, body = m2Body(), mic = ByteArray(16))
         val mic = keyver2Mic(m2, "hashcat!", anonce, snonce)
         System.arraycopy(mic, 0, m2, 81, 16)
-        // M3: Ack + MIC set, from the AP, carrying the same ANonce.
-        val m3 = eapolKey(keyInfo = 0x0182, replay = 2, nonce = anonce, body = m1KeyData(), mic = ByteArray(16))
+        // M3: ACK + INSTALL + MIC, from the AP, carrying the same ANonce.
+        val m3 = eapolKey(keyInfo = 0x01c2, replay = 2, nonce = anonce, body = m1KeyData(), mic = ByteArray(16))
 
         val pcap = PcapBuilder()
         pcap.frame(beacon(ssid))
@@ -410,6 +408,61 @@ class ExtractorTest {
         assertEquals(hexOf(anonce), h.line.split("*")[6])     // ANonce taken from the M3
         // Still the same credential: the cracker verifies the M2 MIC we stored.
         assertTrue(CrackCore.parse(h.line)!!.verify("hashcat!"))
+    }
+
+    /**
+     * A busy network carries M1s from every handshake attempt, so the ANonce that
+     * belongs to a client message is the one sent just before it — not the one with
+     * the highest replay counter. Pairing by counter alone handed the MIC a nonce
+     * from another attempt, and the true password could never match. This is the
+     * shape of the field capture that failed.
+     */
+    @Test
+    fun theAnonceIsTheNearestPrecedingOneNotTheHighestReplay() {
+        val snonce = ByteArray(32) { (it + 21).toByte() }
+        val m2 = eapolKey(keyInfo = 0x0102, replay = 1, nonce = snonce, body = m2Body(), mic = ByteArray(16))
+        System.arraycopy(keyver2Mic(m2, "hashcat!", anonce, snonce), 0, m2, 81, 16)
+
+        val older = ByteArray(32) { (0x11 + it).toByte() }   // previous attempt
+        val later = ByteArray(32) { (0x55 + it).toByte() }   // later attempt, higher replay
+        val pcap = PcapBuilder()
+        pcap.frame(beacon(ssid))
+        pcap.frame(dataEapol(eapolKey(keyInfo = 0x008a, replay = 1, nonce = older, body = ByteArray(0)),
+            fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true))
+        pcap.frame(dataEapol(eapolKey(keyInfo = 0x008a, replay = 5, nonce = later, body = ByteArray(0)),
+            fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true))
+        pcap.frame(dataEapol(eapolKey(keyInfo = 0x008a, replay = 1, nonce = anonce, body = ByteArray(0)),
+            fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true))
+        pcap.frame(dataEapol(m2, fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true))
+
+        val rep = run(pcap.bytes())
+        assertEquals(1, rep.hashes.size)
+        assertEquals(hexOf(anonce), rep.hashes[0].line.split("*")[6])
+        assertTrue("the password must recover the handshake", CrackCore.parse(rep.hashes[0].line)!!.verify("hashcat!"))
+    }
+
+    /** Two client messages are two attempts, each with its own SNonce; a retransmission is not. */
+    @Test
+    fun everyClientMessageGetsItsOwnLineAndRetransmissionsCollapse() {
+        fun clientFrame(snonce: ByteArray, replay: Long): ByteArray {
+            val e = eapolKey(keyInfo = 0x0102, replay = replay, nonce = snonce, body = m2Body(), mic = ByteArray(16))
+            System.arraycopy(keyver2Mic(e, "hashcat!", anonce, snonce), 0, e, 81, 16)
+            return e
+        }
+        val first = clientFrame(ByteArray(32) { (it + 31).toByte() }, 1)
+        val second = clientFrame(ByteArray(32) { (it + 61).toByte() }, 1)
+
+        val pcap = PcapBuilder()
+        pcap.frame(beacon(ssid))
+        pcap.frame(dataEapol(eapolKey(keyInfo = 0x008a, replay = 1, nonce = anonce, body = ByteArray(0)),
+            fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true))
+        repeat(3) { pcap.frame(dataEapol(first, fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true)) }
+        pcap.frame(dataEapol(second, fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true))
+
+        val rep = run(pcap.bytes())
+        assertEquals("two attempts, three retransmitted frames", 2, rep.hashes.size)
+        assertEquals(4, rep.m2Frames)
+        assertTrue(rep.hashes.all { CrackCore.parse(it.line)!!.verify("hashcat!") })
     }
 
     // --- ESSID fallback and stream damage ---------------------------------------
@@ -559,6 +612,46 @@ class ExtractorTest {
         assertFalse("a near miss must not match", target.verify("nostromoTest!23"))
     }
 
+    /**
+     * hashcat's own 22000 vector, replayed as a capture this parser reads: the extractor
+     * must reproduce that exact ANonce, MIC and frame, and the result must crack to
+     * hashcat's own password. This is the test that would have caught the zero-ANonce
+     * bug — its ground truth comes from outside this code.
+     */
+    @Test
+    fun hashcatOfficialVectorSurvivesTheWholePipeline() {
+        val line =
+            "WPA*02*024022795224bffca545276c3762686f*6466b38ec3fc*225edc49b7aa*" +
+                "54502d4c494e4b5f484153484341545f54455354*" +
+                "10e3be3b005a629e89de088d6a2fdc489db83ad4764f2d186b9cde15446e972e*" +
+                "0103007502010a0000000000000000000148ce2ccba9c1fda130ff2fbbfb4fd3b063d1a93920b0f7df54a5cbf787b16171" +
+                "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000016" +
+                "30140100000fac040100000fac040100000fac028000*a2"
+        val p = line.split("*")
+        val ap = hexBytes(p[3])
+        val sta = hexBytes(p[4])
+        val ssid = hexBytes(p[5])
+        val anonce = hexBytes(p[6])
+        val mic = hexBytes(p[2])
+        // The vector stores the frame with its MIC already zeroed; put it back on air.
+        val m2 = hexBytes(p[7]).also { System.arraycopy(mic, 0, it, 81, 16) }
+        // M1 as the AP sent it: ACK, no MIC, the same ANonce, and no key data at all.
+        val m1 = eapolKey(keyInfo = 0x008a, replay = 1, nonce = anonce, body = ByteArray(0))
+
+        val pcap = PcapBuilder()
+        pcap.frame(beacon(ssid, bssid = ap))
+        pcap.frame(dataEapol(m1, fcLo = 0x88, fcHi = 0x02, addr1 = sta, addr2 = ap, withFcs = true))
+        pcap.frame(dataEapol(m2, fcLo = 0x88, fcHi = 0x01, addr1 = ap, addr2 = sta, withFcs = true))
+
+        val rep = run(pcap.bytes())
+        assertEquals(1, rep.hashes.size)
+        val got = rep.hashes[0].line.split("*")
+        for (i in 0..7) assertEquals("field $i of the line", p[i], got[i])
+        assertEquals("00", got[8]) // M1 + M2
+        assertTrue("hashcat's own password must recover this line",
+            CrackCore.parse(rep.hashes[0].line)!!.verify("hashcat!"))
+    }
+
     @Test
     fun crackedTargetsExposeTheirMaterialToNativeEnginesInTlvForm() {
         // The native engines get the same pre-computed buffers CrackCore.verifyWithPmk
@@ -593,8 +686,9 @@ class ExtractorTest {
 
     /**
      * The native engines verify exactly what the Kotlin verifier verifies. A 22000
-     * line can hold its supplicant nonce in either of two EAPOL layouts, so every
-     * layout the parser considers plausible has to reach the native side: otherwise
+     * line can hold its supplicant nonce in either of two EAPOL placements (the real
+     * one at 17..49 and the one this app wrote before 1.4.17 at 49..81), so every
+     * placement the parser considers plausible has to reach the native side: otherwise
      * the same hash cracks on one engine and comes back "not found" on the other.
      */
     @Test
@@ -602,25 +696,33 @@ class ExtractorTest {
         val snonce = ByteArray(32) { (it + 5).toByte() }
         val m2 = eapolKey(keyInfo = 0x010a, replay = 4, nonce = snonce, body = m2Body(), mic = ByteArray(16))
 
-        // A frame as it appears on air: the Key IV/RSC/ID region is empty on a CCMP
-        // handshake, so the descriptor says where the nonce is — one thing to try.
-        val air = m2.copyOf().also { java.util.Arrays.fill(it, 17, 49, 0) }
-        // A frame where both regions hold bytes (a TKIP handshake carries a real Key
-        // IV): the blob no longer says which layout produced it, so both must travel.
-        val both = m2.copyOf()
+        // The real layout: the nonce at 17..49, the Key IV/RSC/ID region empty (as on air).
+        val real = m2.copyOf()
+        // A line this app wrote before 1.4.17: the same nonce at 49..81, 17..49 empty.
+        val legacy = m2.copyOf().also { f ->
+            System.arraycopy(m2, 17, f, 49, 32)
+            java.util.Arrays.fill(f, 17, 49, 0)
+        }
+        // Both regions hold bytes but they differ (a TKIP handshake carries a real Key
+        // IV/RSC/ID): the blob no longer says which layout produced it, so both must travel.
+        val both = m2.copyOf().also { f ->
+            for (i in 0 until 32) f[49 + i] = (0xC0 + i).toByte()
+        }
 
-        val airMaterial = CrackCore.parse(lineWithMic(air, anonce))!!.material()
+        val realMaterial = CrackCore.parse(lineWithMic(real, anonce))!!.material()
+        val legacyMaterial = CrackCore.parse(lineWithMic(legacy, anonce))!!.material()
         val bothMaterial = CrackCore.parse(lineWithMic(both, anonce))!!.material()
-        assertEquals("a descriptor that says where the nonce is gives one set", 1, airMaterial.pkeSets.size)
-        assertEquals("a descriptor that could be either layout gives both", 2, bothMaterial.pkeSets.size)
-        assertArrayEquals("the standard placement is tried first in both cases",
-            airMaterial.pkeSets[0].p100, bothMaterial.pkeSets[0].p100)
-        assertTrue("the second set expands the other nonce placement",
+        assertEquals("a blob with one filled placement gives one set", 1, realMaterial.pkeSets.size)
+        assertEquals(1, legacyMaterial.pkeSets.size)
+        assertEquals("a blob that could be either layout gives both", 2, bothMaterial.pkeSets.size)
+        assertArrayEquals("the real placement is tried first",
+            realMaterial.pkeSets[0].p100, bothMaterial.pkeSets[0].p100)
+        assertTrue("the second set expands the legacy placement",
             !bothMaterial.pkeSets[0].p100.contentEquals(bothMaterial.pkeSets[1].p100))
-        assertEquals(airMaterial.micMsgs.size, bothMaterial.micMsgs.size)
+        assertEquals(realMaterial.micMsgs.size, bothMaterial.micMsgs.size)
 
-        val blob = Material.write(listOf(airMaterial, bothMaterial))
-        assertEquals(2, blob[11].toInt())
+        val blob = Material.write(listOf(realMaterial, legacyMaterial, bothMaterial))
+        assertEquals(3, blob[11].toInt())
         assertTrue(blob.size > 200)
     }
 
@@ -858,11 +960,10 @@ class ExtractorTest {
     }
 
     @Test
-    fun theAnonceComesFromTheNonceFieldNeverFromTheKeyIv() {
-        // A real M1: Key IV/RSC/ID are filled with random bytes at 17..49, and the
-        // ANonce sits at 49..81. An extractor reading 17..49 produces a line whose
-        // ANonce is that IV — which hashes to a different PMK every time, so the
-        // correct password never works and nothing explains why.
+    fun theAnonceAndSnonceComeFromTheNonceFieldAt17() {
+        // hashcat's own 22000 vector (CrackCoreTest) puts the nonce at 17..48 and leaves
+        // 49..81 empty; a live WPA2 capture agrees. Reading 49 instead yields an ANonce
+        // of zeros, and such a line can never verify any password.
         val m1 = eapolKey(keyInfo = 0x008a, replay = 7, nonce = anonce, body = m1KeyData())
         val snonce = ByteArray(32) { (it + 11).toByte() }
         val m2 = eapolKey(keyInfo = 0x010a, replay = 8, nonce = snonce, body = m2Body(), mic = ByteArray(16))
@@ -876,42 +977,62 @@ class ExtractorTest {
 
         val parts = rep.hashes[0].line.split("*")
         assertEquals(hexOf(anonce), parts[6])
-        assertTrue("the ANonce must not be the Key IV region", parts[6] != ivRegionHex.take(64))
-        // The stored M2 must keep the IV/RSC/ID region where the standard puts it.
-        assertTrue(parts[7].startsWith("010300"))
-        assertEquals(ivRegionHex, parts[7].substring(34, 34 + 64))
+        // The stored frame keeps the SNonce exactly where the nonce field is: byte 17 → hex 34.
+        assertEquals(hexOf(snonce), parts[7].substring(34, 34 + 64))
         assertTrue("and the credential still recovers", CrackCore.parse(rep.hashes[0].line)!!.verify("hashcat!"))
     }
 
     /**
-     * Frames like the ones a targeted run puts on the air in numbers: Ack set, MIC clear, a random
-     * Key IV, an empty KEY NONCE field, no key data, sent by the access point. They outnumber the
-     * real handshake, so their label decides whether the report explains itself. Calling them M1
-     * makes the capture look full of AP messages; calling them M4 invents a client that never
-     * transmitted (an M4 is the client's ACK of M3).
+     * Frames like the ones a targeted run puts on the air in numbers: Ack set, MIC clear, an
+     * empty KEY NONCE field, no key data, sent by the access point. They are M1-class frames
+     * without an ANonce, so they cannot supply the nonce a handshake needs, and the report
+     * must say that instead of counting them as usable AP messages.
      */
     @Test
-    fun apEapolWithNoNonceIsNeitherM1NorM4() {
+    fun apEapolWithNoNonceIsNotedAsEmpty() {
         val forged = eapolKey(keyInfo = 0x008a, replay = 1, nonce = ByteArray(32), body = ByteArray(0))
         val pcap = PcapBuilder()
         pcap.frame(beacon(ssid))
         repeat(4) { pcap.frame(dataEapol(forged, fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true)) }
         val rep = run(pcap.bytes())
 
-        assertEquals(0, rep.m1Frames)
+        assertEquals(4, rep.m1Frames)
+        assertEquals(0, rep.pairs)
         assertEquals("an M4 is a client frame, and these came from the AP", 0, rep.m4Frames)
         assertEquals(4, rep.apEmptyEapolFrames)
         assertTrue("the notes must name the class: ${rep.notes}",
             rep.notes.any { it.contains("neither an ANonce nor key data") })
     }
 
-    /** The same empty descriptor, transmitted by a client, is an M4 (the ACK of M3). */
+    /** A client ACK that repeats the nonce is usable: hcxtools' M14E4 (mp 1). */
     @Test
-    fun emptyEapolFromAClientIsAnM4() {
-        val ack = eapolKey(keyInfo = 0x0082, replay = 1, nonce = ByteArray(32), body = ByteArray(0))
+    fun m4ThatRepeatsTheNonceIsUsable() {
+        val snonce = ByteArray(32) { (it + 17).toByte() }
+        val m1 = eapolKey(keyInfo = 0x008a, replay = 1, nonce = anonce, body = ByteArray(0))
+        val m4 = eapolKey(keyInfo = 0x030a, replay = 2, nonce = snonce, body = ByteArray(0),
+            mic = ByteArray(16))
+        System.arraycopy(keyver2Mic(m4, "hashcat!", anonce, snonce), 0, m4, 81, 16)
+
         val pcap = PcapBuilder()
         pcap.frame(beacon(ssid))
-        repeat(4) { pcap.frame(dataEapol(ack, fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true)) }
+        pcap.frame(dataEapol(m1, fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true))
+        pcap.frame(dataEapol(m4, fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true))
+        val rep = run(pcap.bytes())
+
+        assertEquals(1, rep.hashes.size)
+        assertEquals(1, rep.hashes[0].messagePair)
+        assertEquals(1, rep.m4EchoedNonce)
+        assertEquals("an echoed M4 is not an unusable ACK", 0, rep.m4Frames)
+        assertTrue(rep.notes.any { it.contains("repeated the nonce") })
+        assertTrue(CrackCore.parse(rep.hashes[0].line)!!.verify("hashcat!"))
+    }
+
+    /** The same descriptor with SECURE and a MIC, sent by a client: that is a real M4. */
+    @Test
+    fun emptyEapolFromAClientIsAnM4() {
+        val pcap = PcapBuilder()
+        pcap.frame(beacon(ssid))
+        repeat(4) { pcap.frame(dataEapol(m4Frame(1), fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true)) }
         val rep = run(pcap.bytes())
 
         assertEquals(4, rep.m4Frames)

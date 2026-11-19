@@ -81,7 +81,7 @@ object ExtractTool {
 
         if (outFile != null) {
             val out = File(outFile)
-            out.writeText(report.hashes.joinToString("\n") + if (report.hashes.isEmpty()) "" else "\n")
+            out.writeText(report.hashes.joinToString("\n") { it.line } + if (report.hashes.isEmpty()) "" else "\n")
             println("wrote ${report.hashes.size} hash line(s) -> ${out.absolutePath}")
         }
     }

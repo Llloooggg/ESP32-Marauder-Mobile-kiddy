@@ -43,17 +43,13 @@ class CrackCoreTest {
     }
 
     /**
-     * The same handshake as the example above, in the layout the air really uses:
-     * the supplicant nonce in the standard's KEY NONCE field (49..81) and the Key
-     * IV/RSC/ID region (17..49) left empty — which is what this app's own extractor
-     * writes, and what a live access point's frames were confirmed to look like.
-     *
-     * The MIC is recomputed for the rewritten frame with the JDK's own PBKDF2/HMAC,
-     * independently of the code under test, so this pins the nonce placement rather
-     * than agreeing with the implementation being checked.
+     * A line in the layout this app wrote before version 1.4.17: the supplicant nonce
+     * at 49..81 and the Key IV/RSC/ID region (17..49) empty. Those lines are already on
+     * phones, so they must keep verifying — the legacy placement is still accepted,
+     * after the real one (hashcat's own vector puts the nonce at 17..49).
      */
     @Test
-    fun airLayoutHandshakeLineCracksToo() {
+    fun legacyNoncePlacementStillCracks() {
         val p = handshakeLine.split("*")
         val stored = unhex(p[7])
         val snonce = stored.copyOfRange(17, 49)
@@ -83,7 +79,7 @@ class CrackCoreTest {
         val line = "WPA*02*" + hex(mic) + "*" + p[3] + "*" + p[4] + "*" + p[5] + "*" + p[6] + "*" + hex(air) + "*a2"
         val t = CrackCore.parse(line)
         assertNotNull(t)
-        assertTrue("the SNonce in the standard's field must verify", t!!.verify("hashcat!"))
+        assertTrue("the SNonce in the legacy field must still verify", t!!.verify("hashcat!"))
         assertTrue(!t.verify("hashcat1"))
     }
 

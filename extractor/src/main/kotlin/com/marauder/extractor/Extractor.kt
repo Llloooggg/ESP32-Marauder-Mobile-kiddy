@@ -74,7 +74,7 @@ object Extractor {
         val m2s = HashMap<String, MutableList<KeyFrame>>()   // "aa|spa" → M2 candidates (MIC + SNonce)
         val pmkids = LinkedHashMap<String, PmkidHit>()// pmkid hex → hit (dedup)
 
-        for (frame in records) {
+        for ((frameIndex, frame) in records.withIndex()) {
             val b = frame.bytes
             if (b.size < 10) continue
             // 802.11 frame control (LE 16-bit): version@0-1, type@2-3, subtype@4-7,
@@ -135,24 +135,40 @@ object Extractor {
                     if (fromDs) stats.eapolFromAp++ else stats.eapolFromClient++
                     if ((fcHi and 0x08) != 0) stats.eapolRetried++
 
-                    if (eapol.size < 97) { stats.shortEapol++; continue }
+                    if (eapol.size < 99) { stats.shortEapol++; continue }
                     val keyInfo = be16(eapol, 5)
-                    val ack = (keyInfo and 0x0080) != 0
-                    val mic = (keyInfo and 0x0100) != 0
                     val keyver = keyInfo and 0x0007
-                    // EAPOL-Key descriptor layout (IEEE 802.11, WPA descriptor type 2),
-                    // offsets from the EAPOL header start:
-                    //   0 ver, 1 type, 2-3 body length, 4 descriptor type, 5-6 key info,
-                    //   7-8 key length, 9-16 replay, 17-32 key IV, 33-40 key RSC,
-                    //   41-48 key ID, 49-80 KEY NONCE, 81-96 key MIC, 97-98 key data len.
-                    // The nonce is NOT at 17: that region is the key IV (random, so it
-                    // looked plausible) plus RSC/ID. Reading it there produced 22000 lines
-                    // carrying an IV instead of the ANonce — such a line can never crack,
-                    // no matter the password. Real captures proved this; the synthetic
-                    // fixtures had been laying the nonce out where the code read it.
-                    val nonce = eapol.copyOfRange(49, 81)
+                    val bodyLen = be16(eapol, 2)
+                    // EAPOL-Key layout, offset 0 = the EAPOL header start:
+                    //   0-1 ver/type, 2-3 body length, 4 descriptor type, 5-6 key info,
+                    //   7-8 key length, 9-16 replay, 17-48 KEY NONCE, 49-64 key IV,
+                    //   65-72 key RSC, 73-80 key id, 81-96 KEY MIC,
+                    //   97-98 key data length, 99… key data.
+                    // hashcat's own 22000 vector (the known-answer test in CrackCoreTest)
+                    // puts its supplicant nonce at 17 and leaves 49..81 zero. Reading the
+                    // nonce at 49 produced lines with a zero ANonce — unverifiable by any
+                    // password, which is exactly what the live-network capture showed.
+                    val nonce = eapol.copyOfRange(17, 49)
+                    val hasNonce = nonce.any { it != 0.toByte() }
                     val replay = be64(eapol, 9)
-                    val keyDataLen = be16(eapol, 97)
+
+                    // Message class, decided the way hcxtools does (include/ieee80211.c
+                    // getkeyinfo + the 95-byte-body rule in process80211eapol), because that
+                    // is the classification every 22000 consumer agrees with:
+                    // ACK+INSTALL = M3, ACK = M1, SECURE = M4, else M2 — and an "M2" whose
+                    // body is exactly the fixed 95 bytes is an M4 (an ACK carries no key data,
+                    // but its MIC bit is set, which fooled a bit-only classifier).
+                    val ack = (keyInfo and 0x0080) != 0
+                    val install = (keyInfo and 0x0040) != 0
+                    val secure = (keyInfo and 0x0200) != 0
+                    val mic = (keyInfo and 0x0100) != 0
+                    val msg = when {
+                        ack && install -> 3
+                        ack -> 1
+                        secure -> 4
+                        bodyLen == 95 -> 4
+                        else -> 2
+                    }
 
                     // A PMKID rides in the M1 key data (rarely in an M2).
                     val pmkid = findPmkid(eapol)
@@ -166,33 +182,36 @@ object Extractor {
                     }
 
                     val key = "$aa|$spa"
-                    val kf = KeyFrame(aa, spa, eapol, nonce, replay, keyver, keyDataLen, mic, ack)
-                    when {
-                        // M2: MIC set, Ack clear → carries the SNonce and the MIC we verify.
-                        !ack && mic -> {
-                            stats.m2Frames++
-                            m2s.getOrPut(key) { ArrayList(4) }.add(kf)
+                    val kf = KeyFrame(aa, spa, eapol, nonce, replay, keyver, msg, frameIndex)
+                    when (msg) {
+                        // M1: ACK, MIC clear, and it announces the ANonce. Key data is optional
+                        // (184 real M1s in one capture carried none), so it is not a condition.
+                        1 -> {
+                            stats.m1Frames++
+                            if (hasNonce) m1s.getOrPut(key) { ArrayList(4) }.add(kf)
+                            else if (fromDs) stats.apEmptyEapol++
                         }
-                        // M3: MIC set, Ack set, from the AP → carries the ANonce.
-                        ack && mic -> {
+                        // M3: ACK + INSTALL, from the AP — the other carrier of the ANonce.
+                        3 -> {
                             stats.m3Frames++
-                            if (nonce.any { it != 0.toByte() }) m3s.getOrPut(key) { ArrayList(4) }.add(kf)
+                            if (hasNonce) m3s.getOrPut(key) { ArrayList(4) }.add(kf)
                         }
-                        // Ack set, MIC clear: M1 (has nonce + key data) or an empty frame.
+                        // M2: the client's frame with the SNonce and the MIC a password is
+                        // checked against. Without a nonce it verifies nothing and is refused.
+                        2 -> {
+                            stats.m2Frames++
+                            if (mic && hasNonce) m2s.getOrPut(key) { ArrayList(4) }.add(kf)
+                            else stats.clientNoNonce++
+                        }
+                        // M4: the client's ACK of M3. It has a MIC but normally no nonce, so it
+                        // cannot be the frame a password is verified against. A rare client
+                        // echoes the nonce here; such a frame is usable (hcxtools' M14E4).
                         else -> {
-                            val hasNonce = nonce.any { it != 0.toByte() }
-                            if (hasNonce && keyDataLen > 0) {
-                                stats.m1Frames++
-                                m1s.getOrPut(key) { ArrayList(4) }.add(kf)
-                            } else if (fromDs) {
-                                // Sent by an access point and carries neither an ANonce nor key data.
-                                // It is not an M1 (an M1 announces the ANonce) and it is not an M4
-                                // either - the M4 is by definition the client's ACK of M3. Calling
-                                // these M4 told a story about a client that had never spoken, and a
-                                // reader would go looking for a handshake that this air never carried.
-                                stats.apEmptyEapol++
+                            if (mic && hasNonce) {
+                                stats.m4EchoedNonce++
+                                m2s.getOrPut(key) { ArrayList(4) }.add(kf)
                             } else {
-                                stats.m4Frames++   // client ACK: no key material to use
+                                stats.m4Frames++
                             }
                         }
                     }
@@ -231,6 +250,13 @@ object Extractor {
             ).apply { line = hashLine }
         }
         for (p in pairs) {
+            // A credential is only as good as its key material: an all-zero ANonce or an
+            // all-zero MIC cannot be verified by any password, so such a line is never
+            // written (an unverifiable line is a promise the app cannot keep).
+            if (p.anonce.all { it == 0.toByte() } || p.m2.mic().all { it == 0.toByte() }) {
+                stats.pairsNoKeyMaterial++
+                continue
+            }
             val ssid = essidFor(p.aa, essids, knownEssids, stats)
             if (ssid == null) {
                 stats.pairsNoSsid++
@@ -265,6 +291,7 @@ object Extractor {
             m2Frames = stats.m2Frames,
             m3Frames = stats.m3Frames,
             m4Frames = stats.m4Frames,
+            m4EchoedNonce = stats.m4EchoedNonce,
             eapolFromAp = stats.eapolFromAp,
             eapolFromClient = stats.eapolFromClient,
             eapolRetried = stats.eapolRetried,
@@ -285,13 +312,23 @@ object Extractor {
     }
 
     /**
-     * Pick one credential per (AP,client) pair.
+     * Pick the credentials a capture actually supports: one per client message.
      *
-     * M1+M2 is the canonical pair (mp 0). When the AP's M1 never made it into
-     * the air time but its M3 did, the ANonce is still available (M3 carries it)
-     * and the M2's MIC verifies against it — that is hcxtools' MESSAGE_PAIR_M32E2
-     * (mp 2), and it is worth a lot in a lossy capture. M4 is never a nonce
-     * source (it carries none), so an M2 with neither M1 nor M3 stays unusable.
+     * The AP's nonce belongs to one handshake instance, so it is not enough to find
+     * *any* M1 or M3 for the (AP, client) pair — a capture of a busy network holds
+     * dozens, from earlier and later handshakes, and every one of them hashes to a
+     * different PMK. Pairing the wrong one produces a line whose MIC can never match:
+     * the password really is right and nothing cracks it.
+     *
+     * The rule mirrors air time. An M1 precedes the M2 it belongs to, repeats the same
+     * ANonce when retransmitted (a burst of M1s is normal), and its replay counter has
+     * not moved past the client's. So the nearest preceding AP message whose counter
+     * still fits is the one to try. When the capture begins after the client spoke,
+     * the nearest following AP message is the only evidence left.
+     *
+     * Each client message is its own attempt with its own SNonce and MIC, so each gets
+     * a line (identical retransmissions collapse into one). hcxtools' mp codes are
+     * kept: M1+M2 = 0, M3+M2 = 2, and the rare M4 that echoes a nonce = 1 / 5.
      */
     private fun pickPairs(
         m1s: Map<String, MutableList<KeyFrame>>,
@@ -300,29 +337,46 @@ object Extractor {
         stats: Stats,
     ): List<Pair3> {
         val out = ArrayList<Pair3>()
+        val seen = HashSet<String>()
         for ((key, m2list) in m2s) {
             val (aa, spa) = key.split("|", limit = 2)
-            val m2 = m2list.filter { it.eapol.size >= 97 }.maxByOrNull { it.replay } ?: continue
             val m1list = m1s[key].orEmpty()
             val m3list = m3s[key].orEmpty()
-
-            // M1 and M2 share a replay counter in the canonical handshake; M3/M4
-            // run one ahead. Take the exact match first, then the closest one.
-            val m1 = m1list.firstOrNull { it.replay == m2.replay }
-                ?: m1list.filter { it.replay <= m2.replay }.maxByOrNull { it.replay }
-                ?: m1list.minByOrNull { it.replay }
-            if (m1 != null && m1.replay != m2.replay) stats.replayMismatch++
-
-            val m3 = m3list.firstOrNull { it.replay == m2.replay + 1 }
-                ?: m3list.maxByOrNull { it.replay }
-
-            when {
-                m1 != null -> { out += Pair3(aa, spa, m1.nonce, m2, mp = 0); stats.pairsM1M2++ }
-                m3 != null -> { out += Pair3(aa, spa, m3.nonce, m2, mp = 2); stats.pairsM3M2++ }
-                else -> stats.pairsNoApNonce++
+            for (m2 in m2list.sortedBy { it.seq }) {
+                if (m2.eapol.size < 99) continue
+                val m1 = nearestApFrame(m1list, m2, m2.replay)
+                val m3 = nearestApFrame(m3list, m2, m2.replay + 1)
+                val ap = m1 ?: m3
+                if (ap == null) {
+                    stats.pairsNoApNonce++
+                    continue
+                }
+                if (ap === m1 && ap.replay != m2.replay) stats.replayMismatch++
+                // A retransmitted client message repeats the same SNonce and MIC; it is
+                // the same target and does not deserve its own line.
+                if (!seen.add(hex(ap.nonce) + ":" + hex(m2.mic()) + ":" + hex(m2.eapol))) continue
+                val mp = when {
+                    m2.msg == 4 && ap === m1 -> 1
+                    m2.msg == 4 -> 5
+                    ap === m1 -> 0
+                    else -> 2
+                }
+                out += Pair3(aa, spa, ap.nonce, m2, mp)
+                if (ap === m1) stats.pairsM1M2++ else stats.pairsM3M2++
             }
         }
-        return out
+        return out.sortedBy { it.m2.seq }
+    }
+
+    /**
+     * The AP message that belongs to [m2]: the nearest one before it whose replay
+     * counter still fits (retransmissions of the same message repeat the nonce, so
+     * nearest is right), else the nearest one after it.
+     */
+    private fun nearestApFrame(list: List<KeyFrame>, m2: KeyFrame, maxReplay: Long): KeyFrame? {
+        val fits = list.filter { it.replay <= maxReplay }
+        fits.filter { it.seq < m2.seq }.maxByOrNull { it.seq }?.let { return it }
+        return fits.minByOrNull { kotlin.math.abs(it.seq - m2.seq) }
     }
 
     // --- 802.11 / EAPOL helpers ------------------------------------------------
@@ -356,7 +410,7 @@ object Extractor {
         val declared = 4 + be16(b, eapolStart + 2)
         if (declared < 4) return null
         val available = b.size - eapolStart
-        if (available < 97) { stats.shortEapol++; return null }
+        if (available < 99) { stats.shortEapol++; return null }
         val end = if (eapolStart + declared <= b.size) eapolStart + declared else b.size
         if (end == b.size && declared > available) stats.truncatedEapol++
         else if (declared < available) stats.trailingBytes += available - declared
@@ -793,9 +847,10 @@ object Extractor {
         val nonce: ByteArray,
         val replay: Long,
         val keyver: Int,
-        val keyDataLen: Int,
-        val micSet: Boolean,
-        val ackSet: Boolean,
+        /** hcxtools message class of this frame: 1 = M1, 2 = M2, 3 = M3, 4 = M4. */
+        val msg: Int,
+        /** Position in the capture: air time ordering, which is how a client message is paired. */
+        val seq: Int,
     ) {
         /** The MIC as it appears on air (bytes 81..96). */
         fun mic(): ByteArray = eapol.copyOfRange(81, 97)
@@ -834,8 +889,14 @@ object Extractor {
         var m2Frames = 0
         var m3Frames = 0
         var m4Frames = 0
+        /** M4s that repeated a nonce: usable as the client half of a handshake (hcxtools' E4). */
+        var m4EchoedNonce = 0
         /** EAPOL-Key frames sent by an access point that carry no ANonce and no key data. */
         var apEmptyEapol = 0
+        /** Client messages with a MIC but a zero nonce: nothing a password could be checked against. */
+        var clientNoNonce = 0
+        /** Pairs that survived pairing but carried an all-zero ANonce or MIC. */
+        var pairsNoKeyMaterial = 0
         var pmkidFrames = 0
         var pairsM1M2 = 0
         var pairsM3M2 = 0
@@ -868,11 +929,16 @@ object Extractor {
             }
             if (pairsNoApNonce > 0) out += "$pairsNoApNonce client message(s) (M2) had no matching AP message — " +
                 "the AP's frame never reached the capture, so that handshake cannot be rebuilt"
-            if (m4Frames > 0) out += "$m4Frames client ACK frame(s) (M4) seen — they carry no key material, " +
-                "they are not the AP message a handshake needs"
+            if (m4Frames > 0) out += "$m4Frames client ACK frame(s) (M4): a MIC but no nonce — a password is " +
+                "checked against the client's nonce, so no wordlist can verify them"
+            if (m4EchoedNonce > 0) out += "$m4EchoedNonce client ACK frame(s) (M4) repeated the nonce — " +
+                "usable as the client half of a handshake"
+            if (clientNoNonce > 0) out += "$clientNoNonce client message(s) carried a MIC but a zero nonce — " +
+                "no password verifies that"
+            if (pairsNoKeyMaterial > 0) out += "$pairsNoKeyMaterial pair(s) carried an all-zero ANonce or MIC and " +
+                "were not written: such a line cannot be verified"
             if (apEmptyEapol > 0) out += "$apEmptyEapol EAPOL frame(s) sent by an access point carried neither an " +
-                "ANonce nor key data — they are not M1s (an M1 announces the ANonce) and cannot be M4s " +
-                "(an M4 is always sent by a client), so there is nothing to pair them with"
+                "ANonce nor key data — there is nothing to pair them with"
             if (replayMismatch > 0) out += "$replayMismatch pair(s) matched with mismatched replay counters"
             if (truncatedEapol > 0) out += "$truncatedEapol EAPOL frame(s) cut short by the capture (kept what arrived)"
             if (shortEapol > 0) out += "$shortEapol EAPOL frame(s) too short to carry a MIC — ignored"
