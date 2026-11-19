@@ -1366,7 +1366,27 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         if (!m.streamsCapture) return
         val match = eapolRx.find(raw) ?: return
         val mac = match.groupValues[1].lowercase()
-        _activeMission.value = m.copy(eapol = m.eapol + (mac to (m.eapol[mac] ?: 0) + 1))
+        val updated = m.copy(eapol = m.eapol + (mac to (m.eapol[mac] ?: 0) + 1))
+        _activeMission.value = updated
+        // The board prints the transmitter of every EAPOL it hears (WiFiScan.cpp:10639-10643 reads
+        // addr2), so a targeted run whose reports all name the target's own BSSID is the access
+        // point repeating itself at a client that never answers. Saying so while the run is still
+        // going saves the whole capture: the field run of 130 s printed the AP's MAC 246 times and
+        // produced 0 hash lines, and nothing on the screen said why.
+        if (!updated.eapolApOnlySaid && updated.eapolTotal >= EAPOL_AP_ONLY_SAYS_AFTER &&
+            updated.eapolSide == CaptureOps.EapolSide.ACCESS_POINT
+        ) {
+            _activeMission.value = updated.copy(eapolApOnlySaid = true)
+            appendConsole(
+                "⚠ every EAPOL the board has reported (so far ${updated.eapolTotal}) was transmitted by " +
+                    "${updated.target?.bssid} — the network this run is aimed at. That is the access point " +
+                    "repeating itself at a client that has not answered: with no frame from the client there is " +
+                    "nothing to pair, so this capture cannot end in a hash. What changes it is a client that " +
+                    "transmits on this band, not a longer run of the same silence.",
+                LineKind.SYSTEM,
+            )
+            _snackbar.tryEmit("Only the access point is transmitting — no client answer")
+        }
     }
 
     // --- Artifacts ------------------------------------------------------------
@@ -2457,6 +2477,13 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
 
         /** How long the board's one-line `channel` answer may take before the read is called failed. */
         private const val CHANNEL_READ_MS = 1500L
+
+        /**
+         * EAPOL reports from the target's own BSSID before the mission says out loud that the
+         * client is not answering. A handful, rather than one, because one stray AP frame is not
+         * yet a pattern — and a mission that is told too early reads as a false alarm.
+         */
+        private const val EAPOL_AP_ONLY_SAYS_AFTER = 4
 
         /** Selection attempts before refusing a targeted action. */
         private const val PIN_MAX_ATTEMPTS = 3

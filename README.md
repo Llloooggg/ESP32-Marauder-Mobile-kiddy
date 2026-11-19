@@ -161,7 +161,11 @@ is plugged in.
   AP and the client never answered" is stated as the fact it is. An EAPOL frame sent by an AP with
   no ANonce and no key data is its own class rather than an M4, because an M4 is by definition a
   client frame — and two engines that disagree about a label are worse than one that says it does
-  not know.
+  not know. The same rule runs while a capture is still going: the MAC the board prints after
+  `Received EAPOL:` is the frame's transmitter (`WiFiScan.cpp:10639-10643` reads `addr2`), so a
+  targeted run that keeps reporting its own target's BSSID is called out on the spot — the access
+  point is repeating itself at a client that has not answered, and the mission screen labels every
+  sender as AP-side or client-side instead of showing one green number.
 - 🔐 **WPA3-aware, honestly** — SAE-only networks are detected and reported as
   uncrackable by design (their PMK is not PBKDF2-derived) rather than burned
   through a wordlist.

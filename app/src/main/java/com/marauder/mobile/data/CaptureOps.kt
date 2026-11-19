@@ -159,4 +159,39 @@ object CaptureOps {
         val m = channelArg.find(command.trim()) ?: return 0
         return m.value.substringAfter("-c").trim().toIntOrNull() ?: 0
     }
+
+    // --- What the console's own EAPOL reports say about a targeted run ---------
+
+    /**
+     * Which side of the handshake the board has been hearing. Derived from the firmware's own
+     * line, not guessed: `Received EAPOL: <mac>` prints `addr2` of the frame — the transmitter —
+     * because the callback reads the address at byte offset 10 (`WiFiScan.cpp:10639-10643`).
+     */
+    enum class EapolSide { ACCESS_POINT, CLIENT, UNKNOWN }
+
+    /**
+     * The verdict a targeted capture is heading towards. A field run printed
+     * `Received EAPOL: 50:ff:20:90:5a:ef` over and over — the target's own BSSID — for 130 s while
+     * the client never put a frame on the air, which is 246 frames of the access point repeating
+     * itself at nobody. Saying that while the run is still going is worth minutes: no wordlist,
+     * GPU or longer capture of the same silent client can produce a hash.
+     */
+    fun eapolSide(senderMac: String, targetBssid: String?): EapolSide = when {
+        targetBssid.isNullOrBlank() -> EapolSide.UNKNOWN
+        senderMac.equals(targetBssid, ignoreCase = true) -> EapolSide.ACCESS_POINT
+        else -> EapolSide.CLIENT
+    }
+
+    /**
+     * The same verdict across every sender seen so far. `UNKNOWN` when the mission is not pointed
+     * at one network — the app does not claim a silent client when it cannot say which client
+     * should have answered.
+     */
+    fun eapolVerdict(senders: Map<String, Int>, targetBssid: String?): EapolSide {
+        if (senders.isEmpty() || targetBssid.isNullOrBlank()) return EapolSide.UNKNOWN
+        return if (senders.keys.any { eapolSide(it, targetBssid) == EapolSide.CLIENT })
+            EapolSide.CLIENT
+        else
+            EapolSide.ACCESS_POINT
+    }
 }

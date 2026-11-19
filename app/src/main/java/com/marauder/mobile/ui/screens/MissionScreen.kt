@@ -45,6 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.marauder.mobile.data.CaptureOps
 import com.marauder.mobile.data.LiveClassifier
 import com.marauder.mobile.ui.components.ConnectionDot
 import com.marauder.mobile.ui.components.LogPane
@@ -220,6 +221,11 @@ private fun MissionDetails(
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatChip("EAPOL", m.eapolTotal.toString(), if (m.eapolTotal > 0) Success else Warning)
+                // Which side of the handshake those frames came from. A run where only the target AP
+                // transmits cannot end in a hash, whatever the EAPOL count says.
+                if (m.eapolSide == CaptureOps.EapolSide.ACCESS_POINT) {
+                    StatChip("EAPOL AP-ONLY", m.eapolTotal.toString(), Warning)
+                }
                 StatChip("STREAMED", "%.1f KB".format(bytes / 1024.0), MarauderCyan)
                 StatChip("GAPS", missedFrames.toString(), if (missedFrames > 0) Warning else MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -236,32 +242,55 @@ private fun MissionDetails(
                 Text("EAPOL frames caught", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
             }
             items(m.eapol.entries.sortedByDescending { it.value }, key = { it.key }) { entry ->
+                // The MAC the firmware prints after "Received EAPOL:" is the frame's transmitter
+                // (WiFiScan.cpp:10639-10643 reads addr2), so this row says who put the frame on the
+                // air. The target access point sending hundreds of them means it is repeating itself
+                // at a client that never answers - a capture that cannot end in a hash.
+                val side = CaptureOps.eapolSide(entry.key, m.target?.bssid)
+                val tint = when (side) {
+                    CaptureOps.EapolSide.CLIENT -> Success
+                    CaptureOps.EapolSide.ACCESS_POINT -> Warning
+                    CaptureOps.EapolSide.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, Success.copy(alpha = 0.4f)),
+                    border = BorderStroke(1.dp, tint.copy(alpha = 0.4f)),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Row(Modifier.padding(11.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            entry.key,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f),
-                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                entry.key,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                when (side) {
+                                    CaptureOps.EapolSide.CLIENT -> "client side — the frames a handshake is missing without them"
+                                    CaptureOps.EapolSide.ACCESS_POINT ->
+                                        "the network this run is aimed at itself — repeating at a client that has not answered"
+                                    CaptureOps.EapolSide.UNKNOWN -> "transmitter (this run is not pinned to one network)"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = tint,
+                            )
+                        }
                         Box(
-                            Modifier.clip(RoundedCornerShape(6.dp)).background(Success.copy(alpha = 0.15f))
+                            Modifier.clip(RoundedCornerShape(6.dp)).background(tint.copy(alpha = 0.15f))
                                 .padding(horizontal = 8.dp, vertical = 3.dp),
                         ) {
-                            Text("×${entry.value}", style = MaterialTheme.typography.labelMedium, color = Success)
+                            Text("×${entry.value}", style = MaterialTheme.typography.labelMedium, color = tint)
                         }
                     }
                 }
             }
             item {
                 Text(
-                    "Each frame is a piece of the WPA handshake. Two of them (M1+M2), or a PMKID, are enough to try cracking.",
+                    "Two frames from opposite sides (the access point's M1 and the client's M2), or a PMKID, " +
+                        "are what cracking needs. Frames from one side only — however many of them there " +
+                        "are — cannot be paired.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MarauderTextDim,
                 )

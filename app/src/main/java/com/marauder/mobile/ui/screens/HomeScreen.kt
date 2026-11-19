@@ -64,6 +64,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.marauder.mobile.data.CaptureOps
 import com.marauder.mobile.data.Catalog
 import com.marauder.mobile.data.MenuAction
 
@@ -325,6 +326,11 @@ private fun MissionCard(mission: Mission, onOpen: () -> Unit, onStop: () -> Unit
                     mission.eapolTotal.toString(),
                     if (mission.eapolTotal > 0) Success else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // A count alone can mislead: hundreds of EAPOL frames sent only by the target AP is a
+                // capture that cannot end in a hash. The chip names which side is transmitting.
+                if (mission.eapolSide == CaptureOps.EapolSide.ACCESS_POINT) {
+                    StatChip("EAPOL AP-ONLY", mission.eapolTotal.toString(), Warning)
+                }
                 if (mission.kind == MissionKind.CAPTURE || mission.bytes > 0) {
                     StatChip("SAVED", "%.0f KB".format(mission.bytes / 1024.0), MarauderCyan)
                 }

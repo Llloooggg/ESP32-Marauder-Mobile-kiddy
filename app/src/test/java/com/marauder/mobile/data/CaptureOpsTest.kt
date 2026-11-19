@@ -115,4 +115,43 @@ class CaptureOpsTest {
         val firmwareWriteFailure = "Could not successfully update setting \"ChanHop\""
         assertTrue(firmwareWriteFailure.contains(CaptureOps.SETTING_WRITE_FAILED))
     }
+
+    // Who transmitted the EAPOL the board reported. The MAC in `Received EAPOL: <mac>` is addr2 —
+    // the firmware reads the address at byte offset 10 of the frame (`WiFiScan.cpp:10639-10643`) —
+    // so it names the transmitter, which is what tells a targeted run whether its client is talking.
+
+    @Test
+    fun `an EAPOL sent by the target network is the access point side`() {
+        assertEquals(
+            CaptureOps.EapolSide.ACCESS_POINT,
+            CaptureOps.eapolSide("50:ff:20:90:5a:ef", "50:FF:20:90:5A:EF"),
+        )
+        assertEquals(
+            CaptureOps.EapolSide.CLIENT,
+            CaptureOps.eapolSide("b8:87:6e:08:c1:d8", "50:FF:20:90:5A:EF"),
+        )
+    }
+
+    @Test
+    fun `the field run of 246 ap-only frames reads as a silent client`() {
+        // The exact shape of the 130 s run: the board printed the target's own BSSID over and over
+        // and not one frame came from the client it was aimed at.
+        val senders = mapOf("50:ff:20:90:5a:ef" to 246)
+        assertEquals(CaptureOps.EapolSide.ACCESS_POINT, CaptureOps.eapolVerdict(senders, "50:FF:20:90:5A:EF"))
+    }
+
+    @Test
+    fun `a single client frame changes the verdict`() {
+        val senders = mapOf("50:ff:20:90:5a:ef" to 246, "b8:87:6e:08:c1:d8" to 1)
+        assertEquals(CaptureOps.EapolSide.CLIENT, CaptureOps.eapolVerdict(senders, "50:FF:20:90:5A:EF"))
+    }
+
+    @Test
+    fun `no verdict without a pinned target or without EAPOL`() {
+        // The app does not claim a silent client when it cannot say which client should have
+        // answered, and silence about EAPOL is not the same claim as EAPOL from one side.
+        assertEquals(CaptureOps.EapolSide.UNKNOWN, CaptureOps.eapolVerdict(mapOf("50:ff:20:90:5a:ef" to 9), null))
+        assertEquals(CaptureOps.EapolSide.UNKNOWN, CaptureOps.eapolVerdict(emptyMap(), "50:FF:20:90:5A:EF"))
+        assertEquals(CaptureOps.EapolSide.UNKNOWN, CaptureOps.eapolSide("50:ff:20:90:5a:ef", ""))
+    }
 }

@@ -1,5 +1,6 @@
 package com.marauder.mobile.vm
 
+import com.marauder.mobile.data.CaptureOps
 import com.marauder.mobile.data.LiveClassifier
 
 /** What a running mission is doing — drives icons, counters and stop semantics. */
@@ -28,6 +29,8 @@ data class Mission(
     val bytes: Long = 0L,
     /** EAPOL frames observed on the console, keyed by the reporting MAC. */
     val eapol: Map<String, Int> = emptyMap(),
+    /** True once the mission has said out loud that only the target AP is transmitting. */
+    val eapolApOnlySaid: Boolean = false,
     /** Frame-sequence gaps (USB transport loss). */
     val missedFrames: Long = 0L,
     /** Packets the firmware ring dropped (its own loss report). */
@@ -41,6 +44,14 @@ data class Mission(
     val endedAt: Long? = null,
 ) {
     val eapolTotal: Int get() = eapol.values.sum()
+
+    /**
+     * Which side of the handshake the board has reported EAPOL from. `ACCESS_POINT` means the
+     * capture is heading for 0 hashes while it still looks busy: the target AP is the only
+     * transmitter, so the client is not answering.
+     */
+    val eapolSide: CaptureOps.EapolSide
+        get() = CaptureOps.eapolVerdict(eapol, target?.bssid)
 
     /** True when this mission streams a pcap from the board into the artifact library. */
     val streamsCapture: Boolean
