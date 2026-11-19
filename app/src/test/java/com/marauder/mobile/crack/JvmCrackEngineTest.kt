@@ -53,6 +53,23 @@ class JvmCrackEngineTest {
     }
 
     @Test
+    fun cracksTheOfficialVectorFromAListSavedWithABom() = runBlocking {
+        // What Notepad writes: UTF-8 with a byte-order mark. The mark must not become
+        // part of the first word, or the one-line list "59db65bd" is a miss.
+        val list = tmp.newFile("bom.txt").apply {
+            writeBytes(byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) +
+                "hashcat!\n".toByteArray())
+        }
+        val events = JvmCrackEngine().run(
+            CrackConfig(hashLines = listOf(pmkidLine), wordlists = listOf(list))
+        ).toList()
+
+        val found = events.filterIsInstance<CrackEvent.Found>()
+        assertEquals(1, found.size)
+        assertEquals("hashcat!", found[0].password)
+    }
+
+    @Test
     fun findsEveryTargetEvenWhenSeveralShareTheEssid() = runBlocking {
         // Same network twice (e.g. a PMKID + a handshake): both indices must report.
         val engine = JvmCrackEngine()
