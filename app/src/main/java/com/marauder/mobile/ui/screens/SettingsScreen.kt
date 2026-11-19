@@ -96,8 +96,7 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    "It installs next to the upstream Marauder Mobile app and keeps its own captures, " +
-                        "wordlists and journals; move files between the two with Share / Export copy in the Library.",
+                    "Installs beside the upstream app; each keeps its own library. Move files with Share / Export copy.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MarauderTextDim,
                 )
@@ -111,8 +110,7 @@ fun SettingsScreen(
             SectionLabel("Capture handling")
             SwitchRow(
                 title = "Analyse captures automatically",
-                hint = "Extract hashcat-22000 hashes the moment a capture closes, so the library says right away whether " +
-                    "there is anything to crack — and which handshake message is missing when there is not.",
+                hint = "extract hashes when a capture closes",
                 checked = autoAnalyze,
                 onToggle = vm::setAutoAnalyze,
             )
@@ -128,16 +126,12 @@ fun SettingsScreen(
             }
             SettingCard {
                 Text(
-                    "115200 is what the board boots at, and what a replug always returns it to. Higher rates move " +
-                        "captures faster — at 115200 a busy network outruns the link, the board's ring starts shedding " +
-                        "frames and the pcap arrives with holes. The app only trusts a rate the board confirmed " +
-                    "({\"t\":\"baud\"}), and says so when it did not.",
+                    "The board boots at 115200; a replug returns it there. Only a rate the board confirms is used.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MarauderTextDim,
                 )
                 Text(
-                    "CH340 bridges often cannot hold 921600 or more: the board switches, the bridge corrupts the bytes. " +
-                        "If the console turns to garbage after a change, unplug and replug the board.",
+                    "CH340 bridges often cannot hold 921600. If the console turns to garbage, unplug and replug the board.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Warning,
                 )
@@ -184,24 +178,21 @@ fun SettingsScreen(
             }
             SettingCard {
                 Text(
-                    "LINK GAPS = capture frames that never reached the phone (the serial link dropped them): the pcap " +
-                        "record stream desyncs, and every hole is a frame you cannot crack. The reader resynchronises " +
-                        "after a hole instead of losing the rest of the file, and the artifact's diagnostics say how " +
-                        "many bytes were skipped.",
+                    "LINK GAPS = frames the serial link dropped before they reached the phone. The reader resyncs after " +
+                        "a hole; the artifact says how many bytes were skipped.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MarauderTextDim,
                 )
                 Text(
-                    "BOARD DROPS = frames the ESP32 itself could not keep: its ring buffer filled before the link drained " +
-                        "it. Only a higher line rate (above) or a quieter channel fixes that — the phone cannot ask for " +
-                        "a frame that was never sent.",
+                    "BOARD DROPS = frames the board itself could not keep. Only a higher line rate or a quieter channel " +
+                        "changes that.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MarauderTextDim,
                 )
                 if (capture.missedFrames > 0 || capture.droppedPackets > 0) {
                     Text(
-                        "Captures with loss can still hold a complete handshake — what changed is that some frames are " +
-                            "missing, so treat a zero result here as \"incomplete capture\", not \"no handshake\".",
+                        "A capture with loss can still hold a complete handshake: a zero result here means " +
+                            "\"incomplete capture\", not \"no handshake\".",
                         style = MaterialTheme.typography.bodySmall,
                         color = Warning,
                     )

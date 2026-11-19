@@ -83,13 +83,19 @@ class SettingsRepository(context: Context) {
 data class LineRateOption(val rate: Int, val label: String, val hint: String) {
 
     companion object {
-        /** `0` means "leave the board alone". */
+        /**
+         * `0` means "leave the board alone".
+         *
+         * Each description is one short line: these sit in a settings list where a person is choosing a
+         * number, not reading a manual. What stays in them is what decides the choice - what a given
+         * bridge can actually hold, and that a board on its own USB ignores the value entirely.
+         */
         val OPTIONS = listOf(
-            LineRateOption(0, "115200 (board default)", "The rate every bridge boots at. Enough for handshakes and PMKID captures."),
-            LineRateOption(460800, "460800", "About 4x more bytes on a CP210x/CH340 UART bridge. On the ESP32-S2/S3's built-in USB this is answered but changes nothing — that link runs at USB speed."),
-            LineRateOption(921600, "921600", "About 8x on a CP210x bridge; CH340 often cannot hold it. Built-in USB boards ignore the value: the answer is a formality there."),
-            LineRateOption(1500000, "1500000", "Heavy pcap streaming over a good UART bridge and cable. Built-in USB: no effect."),
-            LineRateOption(2000000, "2000000", "The highest rate the firmware accepts, for fast UART bridges only. It is never a fix for a board that loses console characters on its own USB."),
+            LineRateOption(0, "115200 (board default)", "what every bridge boots at; enough for handshakes and PMKID"),
+            LineRateOption(460800, "460800", "~4x more bytes on a CP210x/CH340 bridge; native-USB boards run at USB speed anyway"),
+            LineRateOption(921600, "921600", "~8x on a good CP210x; CH340 often cannot hold it; native-USB boards ignore it"),
+            LineRateOption(1500000, "1500000", "heavy pcap over a good UART bridge and cable; no effect on native USB"),
+            LineRateOption(2000000, "2000000", "the firmware's maximum, for fast UART bridges only; never a fix on native USB"),
         )
 
         fun label(rate: Int): String = OPTIONS.firstOrNull { it.rate == rate }?.label ?: "$rate"
