@@ -84,7 +84,7 @@ class UsbSerialManager(context: Context) {
         const val BAUD = 115200
         private const val WRITE_TIMEOUT_MS = 1000
         private const val RAW_CHUNK = 1024
-        private const val ACTION_USB_PERMISSION = "com.marauder.mobile.USB_PERMISSION"
+        private const val ACTION_USB_PERMISSION = "com.marauder.mobile.kiddy.USB_PERMISSION"
 
         fun deviceLabel(device: UsbDevice): String =
             device.productName?.takeIf { it.isNotBlank() }

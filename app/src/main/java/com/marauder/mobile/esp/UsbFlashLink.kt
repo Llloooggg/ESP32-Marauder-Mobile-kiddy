@@ -95,7 +95,7 @@ class UsbFlashLink(context: Context, private val driver: UsbSerialDriver) : Seri
     }
 
     private companion object {
-        const val ACTION_FLASH_PERMISSION = "com.marauder.mobile.FLASH_USB_PERMISSION"
+        const val ACTION_FLASH_PERMISSION = "com.marauder.mobile.kiddy.FLASH_USB_PERMISSION"
         const val WRITE_TIMEOUT_MS = 3000
         const val READ_BUFFER = 4096
     }

@@ -1,4 +1,6 @@
 <resources>
-    <string name="app_name">Marauder</string>
-    <string name="usb_permission">com.marauder.mobile.USB_PERMISSION</string>
+    <!-- Launcher label: this fork installs alongside the upstream app, so the
+         icon has to read differently in the launcher. -->
+    <string name="app_name">Marauder (fork)</string>
+    <string name="usb_permission">com.marauder.mobile.kiddy.USB_PERMISSION</string>
 </resources>

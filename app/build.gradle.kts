@@ -22,11 +22,16 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.marauder.mobile"
+        // Fork identity: a different applicationId installs this build SIDE BY SIDE
+        // with the upstream ESP32-Marauder-Mobile app. Only the installed id differs
+        // — the code namespace stays com.marauder.mobile, so no source file had to be
+        // renamed. Each install keeps its own data directory, so captures made by one
+        // app are not visible to the other (share them out of the Library to move them).
+        applicationId = "com.marauder.mobile.kiddy"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.3.4"
+        versionCode = 8
+        versionName = "1.4.0-fork"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
