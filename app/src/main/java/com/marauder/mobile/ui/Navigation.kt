@@ -167,6 +167,7 @@ fun AppRoot() {
                     onOpenFlash = { nav.navigate(Routes.FLASH) },
                     onOpenAbout = { nav.navigate(Routes.ABOUT) },
                     onOpenSettings = { nav.navigate(Routes.SETTINGS) },
+                    onOpenCatalogItem = { item -> handleAction(item, nav, vm) },
                     onDisconnect = { vm.disconnect() },
                 )
             }

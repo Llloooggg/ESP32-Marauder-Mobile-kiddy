@@ -391,4 +391,20 @@ object Catalog {
     }.associateBy { it.id }
 
     fun screen(id: String): MenuScreen? = screens[id]
+
+    /**
+     * Every high-impact (`Tier.HIGH`) entry in the tree, in menu order and filtered
+     * by what the connected board advertises. The Home Lab section renders exactly
+     * this list, so "what counts as disruptive" has one definition instead of a
+     * second hand-written one that can drift away from the catalog.
+     */
+    fun highImpactItems(caps: List<String>?): List<MenuItem> =
+        screens.values
+            .flatMap { it.itemsFor(caps) }
+            .filter { it.tier == Tier.HIGH }
+            .distinctBy { it.title }
+
+    /** Whether any high-impact entry is available on a board with [caps]. */
+    fun hasHighImpact(caps: List<String>?): Boolean =
+        screens.values.any { s -> s.items.any { it.tier == Tier.HIGH && it.visibleFor(caps) } }
 }

@@ -113,8 +113,9 @@ fun SettingsScreen(
             SectionLabel("Operations you allow")
             SwitchRow(
                 title = "Lab mode",
-                hint = "Puts the disruptive operations (deauth, beacon spam, PMKID steering, evil portal) in their own " +
-                    "collapsed section on Home. They always stay behind the same authorised-use confirmation.",
+                hint = "Puts the most disruptive commands (BLE spam, Airtag spoofing — anything the firmware tree " +
+                    "marks as active interference) in their own collapsed section on Home. They keep the same " +
+                    "authorised-use confirmation wherever they are shown.",
                 checked = labMode,
                 onToggle = vm::setLabMode,
             )

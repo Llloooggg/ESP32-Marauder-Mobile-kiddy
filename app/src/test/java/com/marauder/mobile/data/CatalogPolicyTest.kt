@@ -68,6 +68,18 @@ class CatalogPolicyTest {
     }
 
     @Test
+    fun labSectionOffersExactlyTheHighTierCatalogEntriesAndRespectsCaps() {
+        val fromTree = allItems.filter { it.tier == Tier.HIGH }.map { it.title }.distinct()
+        val lab = Catalog.highImpactItems(null)
+        assertEquals("the Home Lab section must be the catalog's HIGH tier, not a second list",
+            fromTree, lab.map { it.title })
+        assertEquals("no duplicates in the Lab section", lab.map { it.title }.distinct().size, lab.size)
+        assertTrue("a board with no reported capabilities hides the capability-gated ones",
+            Catalog.highImpactItems(emptyList()).size <= lab.size)
+        assertTrue(Catalog.hasHighImpact(null))
+    }
+
+    @Test
     fun handshakeSniffingOffersBothPassiveAndActiveForms() {
         val sniffers = Catalog.screens.getValue("wifi_sniffers").items.filter { it.title.contains("EAPOL", ignoreCase = true) || it.title.contains("PMKID", ignoreCase = true) }
         assertEquals(2, sniffers.size)
