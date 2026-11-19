@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import com.marauder.mobile.data.Artifact
 import com.marauder.mobile.data.ArtifactRecord
 import com.marauder.mobile.data.CaptureAttribution
+import com.marauder.mobile.data.CaptureDiagnosis
 import com.marauder.mobile.data.KeyManagement
 import com.marauder.mobile.ui.copyToDocument
 import com.marauder.mobile.ui.components.SectionLabel
@@ -255,6 +256,22 @@ fun ArtifactDetailScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MarauderTextDim,
                 )
+                // The case no cracker can be configured out of, said in as many words.
+                if (CaptureDiagnosis.eapolOnlyFromAp(record.meta)) {
+                    Text(
+                        "and this file is short of the one side no tool can supply: every EAPOL frame in it came " +
+                            "from the access point" +
+                            (record.meta[CaptureDiagnosis.META_EAPOL_RETRIED]?.let { r ->
+                                if (r != "0") " ($r of them retransmissions, the Retry bit set — it was repeating " +
+                                    "itself at a client that never answered)" else ""
+                            }.orEmpty()) +
+                            ". There is no client frame here to pair with, so no wordlist, no GPU and no longer " +
+                            "capture of the same silent client can produce a hash. What would change it is a " +
+                            "client that actually transmits on this band.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Warning,
+                    )
+                }
             }
 
             if (record.meta.isNotEmpty()) {

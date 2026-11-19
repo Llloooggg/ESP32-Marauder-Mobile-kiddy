@@ -139,6 +139,10 @@ is plugged in.
   `csimotion start`, `add -a -b`) prompt for it, show the exact command before sending
   it, and name the list the index comes from (`list -b`, the probe list, the IP list).
   Verbs the firmware has commented out (`scansta`, `btwardrive`, …) are never sent.
+  Arguments and whole command lines are checked before they leave the phone (`FirmwareArg`): a value
+  the firmware's parser would mis-read is refused rather than half-sent, and so is anything spanning
+  more than one line — the board ends a command at `\n`, so pasted multi-line text would run several
+  commands while the console and the session journal recorded one.
 - 🎛️ **Board settings, read back** — the firmware's own switches (`ChanHop`,
   `SavePCAP`, `ForcePMKID`, `EPDeauth`, …) are listed from its `settings` dump and
   written with `settings -s <key> enable|disable`; only boolean settings are editable,

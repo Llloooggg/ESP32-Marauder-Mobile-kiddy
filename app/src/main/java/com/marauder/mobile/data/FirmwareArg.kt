@@ -27,4 +27,20 @@ object FirmwareArg {
 
     /** True when [value] can be handed over at all. */
     fun acceptable(value: String): Boolean = wrap(value) != null
+
+    /**
+     * The command as exactly one line, or null when it is not one. The wire protocol ends a command
+     * at `\n`, so a pasted multi-line value would reach the board as several commands while the
+     * app's console and journal show a single `>` line — what was transmitted and what the record
+     * claims would stop matching. Refusing is what keeps the record true.
+     */
+    fun oneLine(command: String): String? {
+        val trimmed = command.trim()
+        if (trimmed.isEmpty()) return null
+        if (trimmed.any { it == '\n' || it == '\r' || it.code < 0x20 || it.code == 0x7f }) return null
+        return trimmed
+    }
+
+    /** How many commands the firmware would run if [command] were sent as it stands. */
+    fun lineCount(command: String): Int = command.split('\n', '\r').count { it.isNotBlank() }.coerceAtLeast(1)
 }

@@ -15,6 +15,7 @@ import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import com.hoho.android.usbserial.util.SerialInputOutputManager
+import com.marauder.mobile.data.FirmwareArg
 import com.marauder.mobile.protocol.CaptureFrame
 import com.marauder.mobile.protocol.SerialDemux
 import kotlinx.coroutines.CoroutineScope
@@ -225,8 +226,13 @@ class UsbSerialManager(context: Context) {
 
     /** Queue a command (a newline is appended). Written on the IO dispatcher. */
     fun send(command: String) {
-        val text = command.trim()
-        if (text.isEmpty()) return
+        val text = FirmwareArg.oneLine(command) ?: run {
+            // Backstop. The wire protocol ends a command at '\n', so text carrying a line break would
+            // reach the board as several commands. The ViewModel refuses earlier and says why on the
+            // console; this covers the paths that send straight to the port.
+            emitEvent("Refused: that is ${FirmwareArg.lineCount(command)} command lines in one send")
+            return
+        }
         scope.launch { writeMutex.withLock { writeLine(text) } }
     }
 

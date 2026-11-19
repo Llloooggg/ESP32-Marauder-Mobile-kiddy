@@ -398,8 +398,22 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
 
     /** Run a firmware command and echo it into the console. */
     fun runCommand(command: String) {
-        val text = command.trim()
-        if (text.isEmpty()) return
+        if (command.isBlank()) return
+        val text = FirmwareArg.oneLine(command)
+        if (text == null) {
+            // A line break ends a command on the wire, so this text is not one command: the board
+            // would run several while the app's console and session journal show a single `>` line.
+            // Refusing is the only way the record stays true.
+            val why = if (command.any { it == '\n' || it == '\r' })
+                "that is ${FirmwareArg.lineCount(command)} command lines — the board ends a command at a line " +
+                    "break and would run every one of them. Send one line at a time."
+            else
+                "it contains a control character, which would cut the command short and leave the rest of it to " +
+                    "be read as a separate command."
+            appendConsole("✗ not sent: $why", LineKind.ERROR)
+            _snackbar.tryEmit("Command not sent: it is not a single clean line")
+            return
+        }
         appendConsole("> $text", LineKind.INPUT)
         usb.send(text)
     }
