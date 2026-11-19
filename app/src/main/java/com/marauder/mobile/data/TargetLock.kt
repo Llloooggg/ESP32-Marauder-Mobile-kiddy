@@ -107,6 +107,28 @@ object TargetLock {
         return Plan(commands, byEssid = false, duplicates = duplicates, fallbackReason = reason)
     }
 
+    /**
+     * Commands that leave the board with nothing selected.
+     *
+     * `select -a <slot>` toggles (CommandLine.cpp:1871-1885), so the deselect plan is
+     * exactly the slots that are selected in [list]. `select -a all` cannot be used:
+     * it toggles the whole list (CommandLine.cpp:1840-1859), so it *selects* every
+     * network when nothing was selected before — the opposite of clearing.
+     *
+     * The firmware splits that one argument on `,` (CommandLine.cpp:1837), so a single
+     * command can address every slot; slots shift between snapshots, which is why the
+     * caller reads the list back afterwards instead of trusting the write.
+     */
+    fun clearPlan(list: List<ApPin>): List<String> {
+        val slots = list.filter { it.selected }.map { it.index }
+        if (slots.isEmpty()) return emptyList()
+        return listOf("select -a ${slots.joinToString(",")}")
+    }
+
+    /** BSSIDs still selected in [list]; empty means the board really is unselected. */
+    fun stillSelected(list: List<ApPin>): Set<String> =
+        list.filter { it.selected }.map { it.bssid }.toSet()
+
     /** What the post-selection `jsonlist a` proved (or failed to prove). */
     sealed class Outcome {
         /** Only the target is selected (or only the target plus its own duplicates). */

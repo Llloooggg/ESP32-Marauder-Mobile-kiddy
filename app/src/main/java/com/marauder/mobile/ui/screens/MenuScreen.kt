@@ -18,33 +18,25 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.marauder.mobile.data.Catalog
-import com.marauder.mobile.data.MenuAction
 import com.marauder.mobile.data.MenuItem
-import com.marauder.mobile.data.Tier
 import com.marauder.mobile.ui.components.LogoHeader
 import com.marauder.mobile.ui.components.MenuCard
 import com.marauder.mobile.ui.components.SectionLabel
@@ -75,11 +67,10 @@ fun MenuScreen(
     val info by vm.info.collectAsState()
     val connected = connStatus == UsbSerialManager.Status.CONNECTED
 
-    // Capability-gated items; HIGH-tier entries are grouped under a LAB header.
+    // Capability-gated items only. Tier is a colour hint on the card, never a gate:
+    // everything the firmware menu tree offers is reachable with one tap, and the
+    // authorised-use consent was given once, at first launch, in the terms banner.
     val visItems = remember(screen, info) { screen.itemsFor(info?.caps) }
-    val (normalItems, labItems) = remember(visItems) { visItems.partition { it.tier != Tier.HIGH } }
-
-    var pendingConfirm by remember { mutableStateOf<MenuItem?>(null) }
 
     Scaffold(
         topBar = {
@@ -152,65 +143,14 @@ fun MenuScreen(
                 item { SectionLabel("Main Menu", modifier = Modifier.padding(top = 6.dp)) }
             }
 
-            items(normalItems, key = { it.title }) { item ->
-                MenuCard(
-                    item = item,
-                    onClick = {
-                        if (item.dangerous && item.action is MenuAction.Send) {
-                            pendingConfirm = item
-                        } else {
-                            onItemClick(item)
-                        }
-                    },
-                )
-            }
-
-            if (labItems.isNotEmpty()) {
-                item { SectionLabel("Lab · Active interference", modifier = Modifier.padding(top = 10.dp)) }
-                items(labItems, key = { it.title }) { item ->
-                    MenuCard(
-                        item = item,
-                        onClick = {
-                            if (item.dangerous && item.action is MenuAction.Send) {
-                                pendingConfirm = item
-                            } else {
-                                onItemClick(item)
-                            }
-                        },
-                    )
-                }
+            items(visItems, key = { it.title }) { item ->
+                MenuCard(item = item, onClick = { onItemClick(item) })
             }
 
             if (isRoot) {
                 item { CreditFooter(onClick = onOpenAbout, modifier = Modifier.padding(top = 14.dp)) }
             }
         }
-    }
-
-    pendingConfirm?.let { item ->
-        AlertDialog(
-            onDismissRequest = { pendingConfirm = null },
-            icon = { Icon(Icons.Filled.Warning, contentDescription = null, tint = Danger) },
-            title = { Text(item.title) },
-            text = {
-                Text(
-                    buildString {
-                        append("This runs an active attack on nearby devices. Only use it on networks you are authorised to test.\n\n")
-                        (item.action as? MenuAction.Send)?.let { append(it.command) }
-                    },
-                    fontFamily = FontFamily.Default,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    onItemClick(item)
-                    pendingConfirm = null
-                }) { Text("Run", color = Danger) }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingConfirm = null }) { Text("Cancel") }
-            },
-        )
     }
 }
 

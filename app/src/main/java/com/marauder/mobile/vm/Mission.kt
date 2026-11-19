@@ -34,6 +34,8 @@ data class Mission(
     val ringDrops: Long = 0L,
     /** Artifact file registered when the capture was finalized, if any. */
     val artifactName: String? = null,
+    /** True when the mission turned the board's `ChanHop` setting off and must put it back. */
+    val restoreChanHop: Boolean = false,
     val done: Boolean = false,
     /** When the mission was finalized (null while it still runs). */
     val endedAt: Long? = null,

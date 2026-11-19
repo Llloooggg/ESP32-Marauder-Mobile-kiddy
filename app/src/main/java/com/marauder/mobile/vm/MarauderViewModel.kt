@@ -8,6 +8,7 @@ import com.marauder.mobile.capture.CaptureSink
 import com.marauder.mobile.data.AnalyzerKind
 import com.marauder.mobile.data.ArtifactRecord
 import com.marauder.mobile.data.ArtifactsRepository
+import com.marauder.mobile.data.CaptureOps
 import com.marauder.mobile.data.GpxAssembler
 import com.marauder.mobile.data.DeviceInfoForJournal
 import com.marauder.mobile.data.FirmwareArg
@@ -119,11 +120,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { settings.setDarkTheme(!darkTheme.value) }
     }
 
-    // --- App settings: Lab gate, auto-analysis, serial line rate --------------
-
-    /** High-impact operations get their own Home section when this is on. */
-    val labMode: StateFlow<Boolean> =
-        settings.labMode.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    // --- App settings: auto-analysis, serial line rate ------------------------
 
     /** Extract hashes the moment a capture closes. */
     val autoAnalyze: StateFlow<Boolean> =
@@ -138,10 +135,6 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
 
     /** Rate the serial link actually runs at right now (0 = not known yet). */
     val activeLineRate: StateFlow<Int> = _activeLineRate.asStateFlow()
-
-    fun setLabMode(enabled: Boolean) {
-        viewModelScope.launch { settings.setLabMode(enabled) }
-    }
 
     fun setAutoAnalyze(enabled: Boolean) {
         viewModelScope.launch { settings.setAutoAnalyze(enabled) }
@@ -443,6 +436,22 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             "gpspoi" -> { handlePoi(trimmed); return }
         }
 
+        // A passive PMKID/EAPOL sniff has to be set up before it runs, or the pcap comes
+        // back empty for reasons the firmware never reports: the board hops off the
+        // channel it was pinned to, and a network selected by an earlier run makes the
+        // sniffer drop every other AP's frames. See CaptureOps for the firmware proof.
+        if (CaptureOps.needsHopOff(trimmed) || CaptureOps.needsEmptySelection(trimmed)) {
+            sniffSetupJob?.cancel()
+            sniffSetupJob = viewModelScope.launch {
+                if (prepareEapolSniff(trimmed)) launchLiveCommand(trimmed, list)
+            }
+            return
+        }
+        launchLiveCommand(trimmed, list)
+    }
+
+    /** The actual send + live polling loop, once the board is in the right state. */
+    private fun launchLiveCommand(trimmed: String, list: ListType?) {
         val capturing = LiveClassifier.of(trimmed).capture && captureCapable
         if (capturing) {
             val path = captureSink.begin(trimmed.substringBefore(' '), CaptureFrame.TYPE_PCAP)
@@ -468,11 +477,110 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    /** Setup for the untargeted EAPOL/PMKID sniff; false = do not start it. */
+    private var sniffSetupJob: Job? = null
+
+    /** The board's `ChanHop` setting is off because this app turned it off. */
+    private var hopDisabled = false
+
+    /**
+     * Put the board into the state a passive sniff needs, and prove it got there.
+     *
+     *  * `sniffpmkid -c N`: turn the persisted `ChanHop` setting off. The command's
+     *    `-c` only sets the channel once; the scan loop hops every 2 s unless that
+     *    setting says otherwise, and only this setting can be changed — there is no
+     *    per-scan option for it. [restoreHopping] puts it back.
+     *  * any `sniffpmkid` without `-l`: make sure nothing is selected, then read the
+     *    list back to check. A single selected AP switches the sniffer into "selected
+     *    only" mode, which drops the frames of every other network before they are
+     *    counted or buffered, and selection survives a stop, so an old targeted run is
+     *    enough to silence a later capture.
+     *
+     * Refusing is better than starting: an empty capture that looks like "nobody was
+     * here" is exactly the silent failure this app is not allowed to produce.
+     */
+    private suspend fun prepareEapolSniff(command: String): Boolean {
+        if (usb.status.value != UsbSerialManager.Status.CONNECTED) return false
+
+        if (CaptureOps.needsHopOff(command) && !hopDisabled) {
+            runCommand("settings -s ChanHop disable")
+            hopDisabled = true
+            appendConsole(
+                "ChanHop off: `-c ${CaptureOps.pinnedChannel(command)}` only sets the channel once — while that " +
+                    "setting is on the scan loop hops away after 2 s. It is restored when this stops.",
+                LineKind.SYSTEM,
+            )
+        }
+        if (!CaptureOps.needsEmptySelection(command)) return true
+
+        if (!awaitApList()) {
+            restoreHopping()
+            appendConsole(
+                "✗ not started: the board did not answer the list request, so its selection state is unknown. " +
+                    "One selected network is enough for the sniffer to drop every other AP's frames.",
+                LineKind.ERROR,
+            )
+            _snackbar.tryEmit("Capture not started — board selection state unknown")
+            return false
+        }
+        var attempt = 0
+        var stale = TargetLock.stillSelected(ledger.aps)
+        while (stale.isNotEmpty()) {
+            if (++attempt > PIN_MAX_ATTEMPTS) {
+                restoreHopping()
+                appendConsole(
+                    "✗ not started: the board still holds ${stale.size} selected network(s) ($stale) and would " +
+                        "listen for those only. Nothing was captured — run clearlist -a, or deselect them.",
+                    LineKind.ERROR,
+                )
+                _snackbar.tryEmit("Capture not started — leftover selection")
+                return false
+            }
+            appendConsole(
+                "Deselecting ${stale.size} network(s) left selected by an earlier run — with any selection the " +
+                    "EAPOL sniffer drops frames of every AP that is not selected",
+                LineKind.SYSTEM,
+            )
+            TargetLock.clearPlan(ledger.aps).forEach { runCommand(it) }
+            if (!awaitApList()) {
+                restoreHopping()
+                appendConsole("✗ not started: the board stopped answering the list request mid-cleanup", LineKind.ERROR)
+                return false
+            }
+            stale = TargetLock.stillSelected(ledger.aps)
+        }
+        if (attempt > 0) {
+            appendConsole("Selection clear — frames for every network on the channel are kept", LineKind.SYSTEM)
+        }
+        return true
+    }
+
+    /** Put the board's `ChanHop` setting back the way the app found it. */
+    private fun restoreHopping() {
+        if (!hopDisabled) return
+        hopDisabled = false
+        runCommand("settings -s ChanHop enable")
+        appendConsole("ChanHop restored", LineKind.SYSTEM)
+    }
+
+    /** Ask for the AP list and suspend until the board's answer has been committed. */
+    private suspend fun awaitApList(): Boolean {
+        delay(PIN_SETTLE_MS)
+        val gate = CompletableDeferred<Unit>()
+        apListCommit = gate
+        refreshList(ListType.ACCESS_POINTS)
+        val answered = withTimeoutOrNull(PIN_LIST_ACK_MS) { gate.await() } != null
+        apListCommit = null
+        return answered
+    }
+
     /** Leave a live screen: stop polling, close any capture, and for continuous
      *  scans/attacks stop the firmware scan (mirrors pressing Back on the device). */
     fun stopLiveActivity(continuous: Boolean) {
         liveJob?.cancel()
         liveJob = null
+        sniffSetupJob?.cancel()
+        sniffSetupJob = null
         _listLoading.value = null
         if (wardriving) stopWardrive()
         if (gpsTracking) { stopTracking(); return } // stopTracking closes the GPX + capture itself
@@ -481,6 +589,9 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         // A GPS-only screen (gpsdata/nmea/tracker/poi) never started a device scan,
         // so only send stopscan for real device scans/attacks.
         if (continuous && !gpsData) usb.send("stopscan")
+        // Whatever channel-pinned sniff needed the board's hopping setting off, this is
+        // where it ends: leaving it off would change how every later scan behaves.
+        restoreHopping()
     }
 
     // --- Mission engine -------------------------------------------------------
@@ -502,7 +613,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         if (usb.status.value != UsbSerialManager.Status.CONNECTED) return false
         if (_activeMission.value?.done == false) stopMission()
 
-        var cmd = command.trim()
+        val cmd = command.trim()
         // Any pcap-writing command gets streamed to the phone (the SD-card replacement),
         // not only the ones the UI labels as captures.
         val capturing = kind == MissionKind.CAPTURE || LiveClassifier.of(cmd).capture
@@ -510,6 +621,32 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             _snackbar.tryEmit("This firmware cannot stream captures (no capstream cap)")
             return false
         }
+
+        // A passive PMKID/EAPOL sniff needs state the firmware will not set up for itself:
+        // the hopping setting for a `-c` run, and an empty selection so the sniffer is not
+        // silently restricted to whatever a previous targeted run left selected (CaptureOps).
+        if (CaptureOps.needsHopOff(cmd) || CaptureOps.needsEmptySelection(cmd)) {
+            sniffSetupJob?.cancel()
+            sniffSetupJob = viewModelScope.launch {
+                if (prepareEapolSniff(cmd)) launchMission(title, cmd, kind, preCommands, stopOnIdle, target)
+            }
+            return true
+        }
+        return launchMission(title, cmd, kind, preCommands, stopOnIdle, target)
+    }
+
+    /** The send itself, once [prepareEapolSniff] has put the board in the right state. */
+    private fun launchMission(
+        title: String,
+        command: String,
+        kind: MissionKind,
+        preCommands: List<String>,
+        stopOnIdle: Boolean,
+        target: MissionTarget?,
+    ): Boolean {
+        if (usb.status.value != UsbSerialManager.Status.CONNECTED) return false
+        var cmd = command.trim()
+        val capturing = kind == MissionKind.CAPTURE || LiveClassifier.of(cmd).capture
 
         usb.send("stopscan")
         preCommands.forEach { runCommand(it) }
@@ -528,6 +665,8 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             startedAt = System.currentTimeMillis(),
             stopOnIdle = stopOnIdle,
             target = target,
+            // The setting was turned off for this run only (by prepareEapolSniff).
+            restoreChanHop = CaptureOps.needsHopOff(cmd),
         )
         journalMission("start", title, cmd, kind, target)
         startMissionPolling(cmd)
@@ -634,6 +773,8 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             "stop", m.title, m.command, m.kind, m.target,
             _activeMission.value ?: m,
         )
+        // The board's hopping setting was borrowed for this mission only.
+        if (m.restoreChanHop) restoreHopping()
     }
 
     /** Register a closed capture file as an artifact record; returns its name. */
@@ -722,10 +863,35 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    /** Watch the firmware console for capture-success lines ("Received EAPOL:"). */
+    /**
+     * Watch the firmware console: capture-success lines ("Received EAPOL:") raise the
+     * mission's counters, and the firmware's own refusals end the mission instead of
+     * leaving it running with nothing in it.
+     */
     private fun onConsoleLine(raw: String) {
         val m = _activeMission.value ?: return
-        if (m.done || !m.streamsCapture) return
+        if (m.done) return
+        if (raw.contains(CaptureOps.NO_TARGETS_SELECTED)) {
+            // `sniffpmkid … -l` (and the targeted attacks) act on the selected list and
+            // the firmware starts nothing when that list is empty. Say what it said
+            // instead of letting a mission that transmits nothing look busy.
+            appendConsole(
+                "✗ the firmware refused: no targets are selected, so nothing ran. Select the network first " +
+                    "(the app pins it by BSSID when you start a targeted capture).",
+                LineKind.ERROR,
+            )
+            _snackbar.tryEmit("Firmware refused: no targets selected")
+            if (m.streamsCapture) finalizeMission(m, natural = true)
+            return
+        }
+        if (raw.contains(CaptureOps.SETTING_WRITE_FAILED)) {
+            // A settings write the board rejected (CommandLine.cpp:747-751): the app must
+            // not go on assuming the state it tried to set.
+            hopDisabled = false
+            appendConsole("✗ the board rejected that settings change — it did not happen", LineKind.ERROR)
+            return
+        }
+        if (!m.streamsCapture) return
         val match = eapolRx.find(raw) ?: return
         val mac = match.groupValues[1].lowercase()
         _activeMission.value = m.copy(eapol = m.eapol + (mac to (m.eapol[mac] ?: 0) + 1))
@@ -957,13 +1123,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             while (isActive) {
                 // Give the firmware a moment to apply the selection, then read the
                 // list back: the read is the only evidence of what is selected.
-                delay(PIN_SETTLE_MS)
-                val gate = CompletableDeferred<Unit>()
-                apListCommit = gate
-                refreshList(ListType.ACCESS_POINTS)
-                val answered = withTimeoutOrNull(PIN_LIST_ACK_MS) { gate.await() } != null
-                apListCommit = null
-                if (!answered) {
+                if (!awaitApList()) {
                     refusePin(bssid, "The board did not answer the list request, so its selection could not be confirmed. Nothing was transmitted.")
                     return@launch
                 }
@@ -1711,6 +1871,18 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         if (captureSink.isActive && !gpsTracking) endCapture()
         closeJournalAndRegister()
         _activeMission.value = null
+        sniffSetupJob?.cancel()
+        sniffSetupJob = null
+        // The ChanHop setting lives in the board's flash, so an unplug can leave it off.
+        // Saying so beats the next scan quietly behaving differently from the last one.
+        if (hopDisabled) {
+            appendConsole(
+                "Link dropped before ChanHop could be restored — the board keeps hopping disabled until it is " +
+                    "enabled again (settings -s ChanHop enable)",
+                LineKind.SYSTEM,
+            )
+        }
+        hopDisabled = false
         wardriving = false
         maybeStopLocation()
         negotiated = false

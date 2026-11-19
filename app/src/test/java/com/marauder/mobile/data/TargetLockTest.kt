@@ -119,4 +119,37 @@ class TargetLockTest {
         val outcome = TargetLock.verify("AA:BB:CC:DD:EE:09", "Gone", listOf(pin(0, "AA:BB:CC:DD:EE:01", "Here")))
         assertTrue(outcome is TargetLock.Outcome.TargetGone)
     }
+
+    // --- clearing the selection (an untargeted sniff must not be blinded by it) -----
+
+    @Test
+    fun `the clear plan toggles exactly the selected slots and nothing else`() {
+        val list = listOf(
+            pin(0, "AA:BB:CC:DD:EE:01", "First", selected = true),
+            pin(1, "AA:BB:CC:DD:EE:02", "Second"),
+            pin(4, "AA:BB:CC:DD:EE:03", "Third", selected = true),
+        )
+        // `select -a` toggles, so a deselect command is the selected slots themselves.
+        // The firmware splits that argument on "," (CommandLine.cpp:1837), so one write covers all.
+        assertEquals(listOf("select -a 0,4"), TargetLock.clearPlan(list))
+    }
+
+    @Test
+    fun `an already clear list needs no commands`() {
+        assertEquals(emptyList<String>(), TargetLock.clearPlan(listOf(pin(0, "AA:BB:CC:DD:EE:01", "First"))))
+    }
+
+    @Test
+    fun `stillSelected is what the caller re-reads to prove the clear landed`() {
+        val before = listOf(
+            pin(0, "AA:BB:CC:DD:EE:01", "First", selected = true),
+            pin(1, "AA:BB:CC:DD:EE:02", "Second", selected = true),
+        )
+        assertEquals(setOf("AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"), TargetLock.stillSelected(before))
+        val after = listOf(
+            pin(0, "AA:BB:CC:DD:EE:01", "First"),
+            pin(1, "AA:BB:CC:DD:EE:02", "Second"),
+        )
+        assertEquals(emptySet<String>(), TargetLock.stillSelected(after))
+    }
 }

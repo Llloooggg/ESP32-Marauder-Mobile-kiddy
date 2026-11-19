@@ -22,8 +22,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeveloperBoard
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
@@ -39,7 +37,6 @@ import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -68,7 +65,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.marauder.mobile.data.Catalog
 import com.marauder.mobile.data.MenuAction
-import com.marauder.mobile.data.MenuItem
+
 import com.marauder.mobile.protocol.DeviceMessage
 import com.marauder.mobile.ui.components.ConnectionDot
 import com.marauder.mobile.ui.components.MenuCard
@@ -111,7 +108,6 @@ fun HomeScreen(
     onOpenAbout: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenPosture: () -> Unit,
-    onOpenCatalogItem: (MenuItem) -> Unit,
     onDisconnect: () -> Unit,
 ) {
     val connStatus by vm.status.collectAsState()
@@ -120,14 +116,7 @@ fun HomeScreen(
     val info by vm.info.collectAsState()
     val mission by vm.activeMission.collectAsState()
     val darkTheme by vm.darkTheme.collectAsState()
-    val labMode by vm.labMode.collectAsState()
     val connected = connStatus == UsbSerialManager.Status.CONNECTED
-
-    // The Lab section is collapsed by default even when enabled: its entries transmit
-    // on purpose, so reaching them is a deliberate extra step, not the default view.
-    var labOpen by remember { mutableStateOf(false) }
-    var pendingLab by remember { mutableStateOf<MenuItem?>(null) }
-    val labItems = remember(info) { Catalog.highImpactItems(info?.caps) }
 
     // Category cards come from the same catalog the Advanced tree renders, so command
     // wiring, capability gating and tiers keep a single source of truth.
@@ -259,63 +248,6 @@ fun HomeScreen(
                 }
             }
 
-            if (labMode && labItems.isNotEmpty()) {
-                    item {
-                        Surface(
-                            onClick = { labOpen = !labOpen },
-                            shape = RoundedCornerShape(13.dp),
-                            color = MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(1.dp, Danger.copy(alpha = 0.5f)),
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Filled.Bolt, contentDescription = null, tint = Danger, modifier = Modifier.size(20.dp))
-                                Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                                    Text(
-                                        "Lab · active interference",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                    )
-                                    Text(
-                                        "${labItems.size} command(s) that transmit on purpose · ${if (labOpen) "tap to collapse" else "tap to open"}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MarauderTextDim,
-                                    )
-                                }
-                                Icon(
-                                    if (labOpen) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                                    contentDescription = if (labOpen) "Collapse" else "Expand",
-                                    tint = MarauderTextDim,
-                                )
-                            }
-                        }
-                    }
-                    if (labOpen) {
-                        item {
-                            Text(
-                                "Everything here is in the firmware's own menu tree and is listed here because it " +
-                                    "interferes with devices near you by design. Each entry still asks you to confirm, " +
-                                    "and the command it runs is shown — nothing is sent silently, and nothing is " +
-                                    "hidden behind a nicer name.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Warning,
-                            )
-                        }
-                        items(labItems, key = { it.title }) { item ->
-                            MenuCard(
-                                item = item,
-                                onClick = {
-                                    if (item.dangerous && item.action is MenuAction.Send) {
-                                        pendingLab = item
-                                    } else {
-                                        onOpenCatalogItem(item)
-                                    }
-                                },
-                            )
-                        }
-                    }
-            }
-
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     QuickTile("Console", Icons.Filled.Terminal, MarauderCyan, Modifier.weight(1f), onClick = onOpenConsole)
@@ -324,33 +256,6 @@ fun HomeScreen(
                 }
             }
         }
-    }
-
-    pendingLab?.let { item ->
-        AlertDialog(
-            onDismissRequest = { pendingLab = null },
-            icon = { Icon(Icons.Filled.Bolt, contentDescription = null, tint = Danger) },
-            title = { Text(item.title) },
-            text = {
-                Text(
-                    buildString {
-                        append(
-                            "This transmits on purpose and affects devices near you. The app will not send it " +
-                                "unless you confirm, and only against networks you are authorised to test.\n\n",
-                        )
-                        (item.action as? MenuAction.Send)?.let { append("$ ") }
-                        (item.action as? MenuAction.Send)?.let { append(it.command) }
-                    },
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    pendingLab = null
-                    onOpenCatalogItem(item)
-                }) { Text("Run it", color = Danger) }
-            },
-            dismissButton = { TextButton(onClick = { pendingLab = null }) { Text("Cancel") } },
-        )
     }
 }
 

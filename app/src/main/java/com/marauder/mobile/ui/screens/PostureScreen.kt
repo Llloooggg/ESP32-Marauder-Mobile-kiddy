@@ -27,7 +27,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -56,7 +55,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.marauder.mobile.data.ListType
-import com.marauder.mobile.protocol.DeviceMessage
 import com.marauder.mobile.ui.components.EmptyState
 import com.marauder.mobile.ui.components.SectionLabel
 import com.marauder.mobile.ui.components.StatChip
@@ -99,7 +97,6 @@ fun PostureScreen(
 
     var chosenBssid by remember { mutableStateOf<String?>(null) }
     var password by remember { mutableStateOf("") }
-    var pendingJoin by remember { mutableStateOf<DeviceMessage.Ap?>(null) }
 
     LaunchedEffect(Unit) {
         vm.refreshList(ListType.ACCESS_POINTS)
@@ -246,7 +243,7 @@ fun PostureScreen(
                                 Button(
                                     onClick = {
                                         aps.firstOrNull { it.bssid.equals(chosenBssid, ignoreCase = true) }
-                                            ?.let { pendingJoin = it }
+                                            ?.let { vm.joinNetwork(it.bssid, password) }
                                     },
                                     enabled = connected && chosenBssid != null && password.isNotEmpty(),
                                     modifier = Modifier.weight(1f),
@@ -256,6 +253,13 @@ fun PostureScreen(
                                     enabled = connected,
                                 ) { Text("Use saved") }
                             }
+                            Text(
+                                "Joining takes the board off the channel it was monitoring and makes it a client of " +
+                                    "that network. The app addresses the network by BSSID and resolves the firmware's " +
+                                    "list slot for it at the moment the command is sent.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MarauderTextDim,
+                            )
                         }
                     }
                 }
@@ -356,30 +360,6 @@ fun PostureScreen(
                 Spacer(Modifier.size(16.dp))
             }
         }
-    }
-
-    pendingJoin?.let { ap ->
-        AlertDialog(
-            onDismissRequest = { pendingJoin = null },
-            icon = { Icon(Icons.Filled.Wifi, contentDescription = null, tint = CatWifi) },
-            title = { Text("Join ${ap.essid.ifBlank { "(hidden)" }}?") },
-            text = {
-                Text(
-                    "The board stops scanning and associates with this network as a client. That takes it off the " +
-                        "channel it was monitoring, and it is only something to do with a network you are " +
-                        "authorised to test.\n\n" +
-                        "BSSID ${ap.bssid} · channel ${ap.channel}\n" +
-                        "The app resolves the firmware's list slot for this BSSID when the command is sent.",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    pendingJoin = null
-                    vm.joinNetwork(ap.bssid, password)
-                }) { Text("Join", color = MarauderCyan) }
-            },
-            dismissButton = { TextButton(onClick = { pendingJoin = null }) { Text("Cancel") } },
-        )
     }
 }
 

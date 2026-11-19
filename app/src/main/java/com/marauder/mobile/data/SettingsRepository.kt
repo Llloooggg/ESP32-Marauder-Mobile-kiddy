@@ -36,17 +36,6 @@ class SettingsRepository(context: Context) {
     }
 
     /**
-     * Lab mode puts the high-impact (Tier.HIGH) operations on the Home screen as
-     * their own collapsed section. Off by default: those commands are disruptive
-     * by nature, so they stay in the Toolbox until the user says otherwise.
-     */
-    val labMode: Flow<Boolean> = store.data.map { it[LAB_MODE] ?: false }
-
-    suspend fun setLabMode(enabled: Boolean) {
-        store.edit { it[LAB_MODE] = enabled }
-    }
-
-    /**
      * Extract hashcat-22000 hashes as soon as a capture closes. On by default —
      * it is what lets the library tell you straight away whether a capture is
      * worth cracking (and why not, when it is not).
@@ -76,7 +65,6 @@ class SettingsRepository(context: Context) {
     private companion object {
         val DARK_THEME = booleanPreferencesKey("dark_theme")
         val TERMS_ACCEPTED = booleanPreferencesKey("terms_accepted")
-        val LAB_MODE = booleanPreferencesKey("lab_mode")
         val AUTO_ANALYZE = booleanPreferencesKey("auto_analyze")
         val LINE_RATE = intPreferencesKey("line_rate")
     }

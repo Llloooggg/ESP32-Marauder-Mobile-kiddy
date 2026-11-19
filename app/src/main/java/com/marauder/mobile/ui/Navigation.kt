@@ -170,7 +170,6 @@ fun AppRoot() {
                     onOpenAbout = { nav.navigate(Routes.ABOUT) },
                     onOpenSettings = { nav.navigate(Routes.SETTINGS) },
                     onOpenPosture = { nav.navigate(Routes.POSTURE) },
-                    onOpenCatalogItem = { item -> handleAction(item, nav, vm) },
                     onDisconnect = { vm.disconnect() },
                 )
             }

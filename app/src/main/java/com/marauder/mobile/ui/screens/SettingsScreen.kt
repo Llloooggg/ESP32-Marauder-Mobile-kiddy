@@ -47,9 +47,8 @@ import com.marauder.mobile.usb.UsbSerialManager
 import com.marauder.mobile.vm.MarauderViewModel
 
 /**
- * App settings: the Lab gate, whether captures are analysed automatically, the
- * USB-serial line rate the board is asked for, and the honest capture-integrity
- * counters (frames lost on the link, packets the board's ring dropped) that
+ * App settings: whether captures are analysed automatically, the USB-serial line
+ * rate the board is asked for, and the honest capture-integrity counters (frames lost on the link, packets the board's ring dropped) that
  * explain why a pcap can come up short.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -60,7 +59,6 @@ fun SettingsScreen(
     onOpenWordlists: () -> Unit,
     onOpenAbout: () -> Unit,
 ) {
-    val labMode by vm.labMode.collectAsState()
     val autoAnalyze by vm.autoAnalyze.collectAsState()
     val lineRate by vm.lineRate.collectAsState()
     val activeRate by vm.activeLineRate.collectAsState()
@@ -110,15 +108,7 @@ fun SettingsScreen(
                 )
             }
 
-            SectionLabel("Operations you allow")
-            SwitchRow(
-                title = "Lab mode",
-                hint = "Puts the most disruptive commands (BLE spam, Airtag spoofing — anything the firmware tree " +
-                    "marks as active interference) in their own collapsed section on Home. They keep the same " +
-                    "authorised-use confirmation wherever they are shown.",
-                checked = labMode,
-                onToggle = vm::setLabMode,
-            )
+            SectionLabel("Capture handling")
             SwitchRow(
                 title = "Analyse captures automatically",
                 hint = "Extract hashcat-22000 hashes the moment a capture closes, so the library says right away whether " +

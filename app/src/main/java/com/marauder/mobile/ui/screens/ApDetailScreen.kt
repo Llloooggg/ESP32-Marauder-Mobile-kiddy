@@ -55,7 +55,6 @@ import com.marauder.mobile.data.Security
 import com.marauder.mobile.data.Tier
 import com.marauder.mobile.protocol.DeviceMessage
 import com.marauder.mobile.ui.components.EmptyState
-import com.marauder.mobile.ui.components.PolicyDialog
 import com.marauder.mobile.ui.components.SectionLabel
 import com.marauder.mobile.ui.components.StatChip
 import com.marauder.mobile.ui.theme.CatAttack
@@ -92,6 +91,9 @@ private data class TargetAction(
     /** Opens the raw live screen: the firmware streams its own table/telemetry. */
     val liveTitle: String? = null,
     val analyzer: AnalyzerKind? = null,
+    /** Needs a known channel: `sniffpmkid -c 0` is not a channel, so the board would be
+     *  left on whatever it last used instead of on this network's. */
+    val requiresChannel: Boolean = false,
 )
 
 /**
@@ -139,8 +141,6 @@ fun ApDetailScreen(
         }
     }
 
-    var pending by remember { mutableStateOf<TargetAction?>(null) }
-
     val actions = remember(apBssid, info, ap) {
         val slot = ap?.bssid?.let { vm.slotOf(it) } ?: -1
         val ch = ap?.channel ?: 0
@@ -169,6 +169,11 @@ fun ApDetailScreen(
                 // this network's channel instead of hopping (-l would need a selection).
                 command = "sniffpmkid -c $ch",
                 mission = MissionKind.SNIFF,
+                requiresChannel = true,
+                note = "No frames are sent. `-c $ch` only sets the channel once — the scan loop hops away 2 s later " +
+                    "unless the board's ChanHop setting is off, so the app switches that setting off for this run " +
+                    "and puts it back when it ends, and it deselects any network left selected by an earlier " +
+                    "targeted run, because the sniffer otherwise drops every other AP's frames.",
             ),
             TargetAction(
                 title = "Deauth flood (targeted)",
@@ -280,17 +285,27 @@ fun ApDetailScreen(
             }
 
             item { SectionLabel("Actions") }
-            items(actions.filter { it.requiresCap == null || info?.has(it.requiresCap) == true }) { action ->
+            items(
+                actions.filter {
+                    (it.requiresCap == null || info?.has(it.requiresCap) == true) &&
+                        (!it.requiresChannel || (ap.channel > 0))
+                },
+            ) { action ->
                 ActionCard(
                     action = action,
                     busy = mission?.done == false && mission?.kind == action.mission,
-                    onClick = {
-                        when {
-                            action.tier == Tier.SAFE -> run(action, ap, vm, onOpenMission, onOpenLive, onOpenAnalyzer)
-                            else -> pending = action
-                        }
-                    },
+                    onClick = { run(action, ap, vm, onOpenMission, onOpenLive, onOpenAnalyzer) },
                 )
+            }
+            if (ap.channel <= 0) {
+                item {
+                    Hint(
+                        "The board has not recorded a channel for this network, so the channel-pinned listens are " +
+                            "hidden: `sniffpmkid -c 0` is not a channel, and the board would sit on whatever " +
+                            "channel it last used while pretending to watch this one.",
+                        Warning,
+                    )
+                }
             }
 
             item {
@@ -331,20 +346,6 @@ fun ApDetailScreen(
                     StationRow(sta, onSelect = { vm.selectClient(sta.mac) })
                 }
             }
-        }
-
-        pending?.let { action ->
-            PolicyDialog(
-                title = action.title,
-                command = action.command,
-                tier = action.tier,
-                note = action.note,
-                onDismiss = { pending = null },
-                onConfirm = {
-                    pending = null
-                    run(action, ap, vm, onOpenMission, onOpenLive, onOpenAnalyzer)
-                },
-            )
         }
     }
 }
@@ -496,11 +497,18 @@ private fun ActionCard(action: TargetAction, busy: Boolean, onClick: () -> Unit)
                     fontFamily = FontFamily.Monospace,
                     color = if (busy) MarauderCyan else MarauderTextDim,
                 )
+                // What the command really does stays on the card instead of hiding behind
+                // a confirm button: the tap is the consent (given once at first launch), but
+                // an icon and a label must never make a transmitter look harmless.
+                action.note?.let {
+                    Spacer(Modifier.size(4.dp))
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = MarauderTextDim)
+                }
             }
             when (action.tier) {
                 Tier.SAFE -> Unit
-                Tier.MODERATE -> Icon(Icons.Filled.LockOpen, contentDescription = "Requires confirmation", tint = Warning, modifier = Modifier.size(18.dp))
-                Tier.HIGH -> Icon(Icons.Filled.Bolt, contentDescription = "High impact", tint = Danger, modifier = Modifier.size(18.dp))
+                Tier.MODERATE -> Icon(Icons.Filled.LockOpen, contentDescription = "Transmits frames", tint = Warning, modifier = Modifier.size(18.dp))
+                Tier.HIGH -> Icon(Icons.Filled.Bolt, contentDescription = "Active interference", tint = Danger, modifier = Modifier.size(18.dp))
             }
             if (busy) {
                 Spacer(Modifier.width(6.dp))

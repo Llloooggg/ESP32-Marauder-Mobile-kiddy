@@ -29,9 +29,7 @@ import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.UploadFile
-import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,7 +41,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -75,7 +72,6 @@ fun EvilPortalScreen(vm: MarauderViewModel, onBack: () -> Unit) {
     val state by vm.evilPortal.collectAsState()
     val aps by vm.aps.collectAsState()
     val context = LocalContext.current
-    var confirmStart by remember { mutableStateOf(false) }
 
     // Fresh flow each time the screen opens; pull the current device AP list so a
     // target can be picked without leaving.
@@ -142,7 +138,7 @@ fun EvilPortalScreen(vm: MarauderViewModel, onBack: () -> Unit) {
                     if (state.htmlReady) {
                         TargetApCard(aps = aps, selected = state.targetApBssid, onSelect = vm::setPortalTargetAp)
                         Button(
-                            onClick = { confirmStart = true },
+                            onClick = { vm.startEvilPortal() },
                             enabled = state.targetApBssid != null,
                             modifier = Modifier.fillMaxWidth(),
                         ) { Text("Start portal") }
@@ -153,33 +149,20 @@ fun EvilPortalScreen(vm: MarauderViewModel, onBack: () -> Unit) {
                                 color = MarauderTextDim,
                             )
                         }
+                        Text(
+                            "Start broadcasts a rogue access point that clones the network you picked and serves this " +
+                                "page to whoever connects to it. This firmware's portal does not kick clients off the " +
+                                "real network — a device has to join the clone, so the portal only works on clients " +
+                                "that associate with it.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Warning,
+                        )
                     }
                 }
             }
 
             if (state.creds.isNotEmpty()) CredsCard(state.creds)
         }
-    }
-
-    if (confirmStart) {
-        AlertDialog(
-            onDismissRequest = { confirmStart = false },
-            icon = { Icon(Icons.Filled.WarningAmber, contentDescription = null, tint = Warning) },
-            title = { Text("Start Evil Portal?") },
-            text = {
-                Text(
-                    "This broadcasts a rogue access point and serves your page to anyone who " +
-                        "connects, capturing what they submit. Only use it on networks and devices " +
-                        "you are authorised to test.",
-                )
-            },
-            confirmButton = {
-                Button(onClick = { confirmStart = false; vm.startEvilPortal() }) { Text("Start") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmStart = false }) { Text("Cancel") }
-            },
-        )
     }
 }
 

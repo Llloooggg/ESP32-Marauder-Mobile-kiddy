@@ -127,6 +127,21 @@ is plugged in.
 - 🔐 **WPA3-aware, honestly** — SAE-only networks are detected and reported as
   uncrackable by design (their PMK is not PBKDF2-derived) rather than burned
   through a wordlist.
+- 🛡️ **One consent surface, not one per command** — the authorised-use terms are
+  accepted once, in the banner shown on first launch. Nothing in the catalog is
+  hidden behind a mode switch or a second confirmation: every command the connected
+  board can run is one tap away, and the tier colour on a card is only a statement
+  of how loud that command is. What is transmitted, and against which BSSID, is
+  written on the card itself.
+- 🧷 **Capture reliability, fixed at the cause** — two firmware behaviours silently
+  blank a PMKID/EAPOL capture, so the app deals with them before the run instead of
+  explaining an empty pcap afterwards: a `sniffpmkid -c <ch>` run only *sets* the
+  channel (the scan loop keeps hopping every 2 s unless the persisted `ChanHop`
+  setting is off, so the app switches it off for the run and puts it back after),
+  and any network left selected by an earlier targeted run puts the EAPOL sniffer
+  into selected-only mode, where frames of every other AP are dropped before they
+  are counted or buffered (the app deselects them and reads the list back to prove
+  it). If the state cannot be proven, the capture is refused rather than started.
 
 ## Protocol (firmware ↔ app)
 

@@ -133,7 +133,12 @@ data class MenuItem(
     val accent: Accent,
     val action: MenuAction,
     val dangerous: Boolean = false,
-    /** Defaults: dangerous entries at least need a confirm; explicit override allowed. */
+    /**
+     * Display only: colours the card and marks how loud the command is. It is not a
+     * permission — the catalog exposes every command the connected board can run, and the
+     * only thing that hides an entry is [requiresCaps]. Authorised-use consent is given
+     * once, at first launch, in the terms banner.
+     */
     val tier: Tier = if (dangerous) Tier.MODERATE else Tier.SAFE,
     /** Firmware capability codes (from jsoninfo) this entry needs; empty = always. */
     val requiresCaps: Set<String> = emptySet(),
@@ -402,20 +407,4 @@ object Catalog {
     }.associateBy { it.id }
 
     fun screen(id: String): MenuScreen? = screens[id]
-
-    /**
-     * Every high-impact (`Tier.HIGH`) entry in the tree, in menu order and filtered
-     * by what the connected board advertises. The Home Lab section renders exactly
-     * this list, so "what counts as disruptive" has one definition instead of a
-     * second hand-written one that can drift away from the catalog.
-     */
-    fun highImpactItems(caps: List<String>?): List<MenuItem> =
-        screens.values
-            .flatMap { it.itemsFor(caps) }
-            .filter { it.tier == Tier.HIGH }
-            .distinctBy { it.title }
-
-    /** Whether any high-impact entry is available on a board with [caps]. */
-    fun hasHighImpact(caps: List<String>?): Boolean =
-        screens.values.any { s -> s.items.any { it.tier == Tier.HIGH && it.visibleFor(caps) } }
 }

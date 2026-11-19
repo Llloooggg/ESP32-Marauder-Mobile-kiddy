@@ -55,7 +55,7 @@ class CatalogPolicyTest {
         assertTrue(high.isNotEmpty())
         assertTrue("HIGH entries must be marked dangerous", high.all { it.dangerous })
         assertTrue(
-            "the lab section may only hold spam/spoof transmitters: ${high.map { it.title }}",
+            "HIGH is reserved for spam/spoof transmitters, not for anything merely targeted: ${high.map { it.title }}",
             high.all {
                 val head = (it.action as? MenuAction.Send)?.command?.trim()?.substringBefore(' ')
                 head == "blespam" || head == "spoofat"
@@ -65,18 +65,6 @@ class CatalogPolicyTest {
             "a dangerous entry can never be SAFE",
             allItems.filter { it.dangerous }.none { it.tier == Tier.SAFE },
         )
-    }
-
-    @Test
-    fun labSectionOffersExactlyTheHighTierCatalogEntriesAndRespectsCaps() {
-        val fromTree = allItems.filter { it.tier == Tier.HIGH }.map { it.title }.distinct()
-        val lab = Catalog.highImpactItems(null)
-        assertEquals("the Home Lab section must be the catalog's HIGH tier, not a second list",
-            fromTree, lab.map { it.title })
-        assertEquals("no duplicates in the Lab section", lab.map { it.title }.distinct().size, lab.size)
-        assertTrue("a board with no reported capabilities hides the capability-gated ones",
-            Catalog.highImpactItems(emptyList()).size <= lab.size)
-        assertTrue(Catalog.hasHighImpact(null))
     }
 
     @Test
@@ -91,5 +79,29 @@ class CatalogPolicyTest {
     fun deauthFloodIsLabelledAsDoNotCapture() {
         val deauth = allItems.first { (it.action as? MenuAction.Send)?.command == "attack -t deauth -c" }
         assertTrue(deauth.title.contains("DoS", ignoreCase = true))
+    }
+
+    /**
+     * Nothing about a command hides it: an entry may only be absent because the connected
+     * board does not advertise the capability it needs. If someone reintroduces a tier,
+     * safety or settings gate over the catalog, this fails — the consent model here is the
+     * first-launch banner, so a second invisible permission layer would only make the
+     * firmware's own menu tree unreachable.
+     */
+    @Test
+    fun entriesAreHidOnlyByMissingFirmwareCapabilities() {
+        val caps = allItems.flatMap { it.requiresCaps }.distinct()
+        Catalog.screens.values.forEach { screen ->
+            assertEquals("${screen.id}: a capable board must expose every entry it has",
+                screen.items.size, screen.itemsFor(caps).size)
+            assertEquals("${screen.id}: an unknown board (never answered jsoninfo) must hide nothing",
+                screen.items.size, screen.itemsFor(null).size)
+        }
+        assertTrue(
+            "every tier value must stay reachable on one board",
+            Tier.entries.all { tier ->
+                Catalog.screens.values.any { it.itemsFor(caps).any { item -> item.tier == tier } }
+            },
+        )
     }
 }
