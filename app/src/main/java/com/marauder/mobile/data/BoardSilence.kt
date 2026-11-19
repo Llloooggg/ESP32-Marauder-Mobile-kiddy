@@ -33,14 +33,20 @@ object BoardSilence {
 
     /**
      * The sentence shown for a mute port. It states what the app did (so the user can tell a missing
-     * answer from a command that was never sent), then the causes this hardware actually allows, in
-     * the order they were met in the field.
+     * answer from a command that was never sent), then the causes that are real across the boards this
+     * app drives.
+     *
+     * Deliberately no board names and no connector counts: supported boards differ in how many USB
+     * ports they expose and what each one is, and an app that guesses "try the other socket" about a
+     * board it has never seen is guessing. What every board has is the same fork in the wire — the
+     * chip's own USB, where a line rate is a formality, or a UART bridge, where it is real — and a
+     * firmware build prints its console on exactly one of those two.
      */
     fun explain(asks: Int, baud: Int, waitedMs: Long): String =
         "the port is open and the board has not sent a single byte in ${waitedMs / 1000}s " +
-            "($asks asks over $baud baud). A port that opens is not a board that answers: an ESP32-S3 " +
-            "dev kit has two USB connectors — the UART bridge, where the line rate is real, and the " +
-            "chip's own USB, which ignores it — and firmware prints its console on one of them, so a " +
-            "cable in the other gives a port that opens and stays mute. A rate other than $baud, or a " +
-            "board that needs its own reset button, looks the same from here."
+            "($asks asks over $baud baud). A port that opens is not a board that answers. Every board " +
+            "here has the same fork in the wire: the chip's own USB, where a line rate is a formality, " +
+            "or a UART bridge, where the rate is real — and firmware prints its console on one of " +
+            "those two, so a port on the other one opens and stays mute. A rate other than $baud, or a " +
+            "board that needs its reset button, looks the same from here."
 }

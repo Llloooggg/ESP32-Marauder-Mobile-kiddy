@@ -41,15 +41,16 @@ class BoardSilenceTest {
     }
 
     @Test
-    fun theSentenceNamesTheCauseThatWasActuallyFoundInTheField() {
-        // Measured on a PC with this board: an FTDI port opened at 115200, commands went out, and zero
-        // bytes came back — the cable was in the bridge connector while the firmware prints its
-        // console on the chip's own USB. The wording has to offer that pair of connectors, because a
-        // user holding a cable has exactly one decision to make.
+    fun theSentenceNamesTheForkInRealHardwareWithoutNamingABoard() {
+        // The cause was measured on one particular board, but the app drives many, and each exposes
+        // its ports differently. Naming the fork (chip's own USB vs UART bridge) is what a user can
+        // act on for any of them; naming a dev kit they do not own is noise, and a guess about a board
+        // the app has never seen.
         val why = BoardSilence.explain(2, 921600, 4_000L)
-        assertTrue(why, why.contains("two USB connectors"))
-        assertTrue(why, why.contains("UART"))
+        assertTrue(why, why.contains("chip's own USB"))
+        assertTrue(why, why.contains("UART bridge"))
         assertTrue(why, why.contains("reset"))
+        assertTrue(why, !why.contains("ESP32"))
     }
 
     @Test
