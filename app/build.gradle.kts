@@ -34,8 +34,12 @@ android {
         applicationId = "com.marauder.mobile.kiddy"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.4.0-kiddy"
+        // The version pair is how a build identifies itself in the wild: the report archive header
+        // and the About line both print `versionName (versionCode)`, and a capture made last week
+        // can only be re-read against the build that made it if that pair changed when behaviour did.
+        // So: any build that changes behaviour gets a new versionCode.
+        versionCode = 9
+        versionName = "1.4.1-kiddy"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
