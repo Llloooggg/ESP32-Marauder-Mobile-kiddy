@@ -26,8 +26,14 @@ between them with **Share** / **Export copy** in the Library.
 What this build adds over upstream: a capture **library** (pcap / gpx / log /
 csv on the phone), a **pcap → hashcat-22000 extractor** (PMKID + handshake
 pairs, ANonce recovery from M3, resync of captures damaged in transit), a
-**built-in cracker** with rate/ETA and a hash inspector, a per-session **journal**
-and one-tap **report export** (markdown + zip), and CSV exports of every list.
+**built-in cracker** with three engines behind one contract (JVM, a native C++
+core, and a Vulkan compute engine) each gated by a known-answer test that runs on
+the device, rate/ETA and a hash inspector, **BSSID-pinned** targeted operations
+(every capture records the BSSID it was aimed at, and every index-addressed
+firmware command is resolved from identity at press time or refused), WPA3/SAE
+**detection with an honest verdict** rather than wasted wordlist time, a per-session
+**journal** and one-tap **report export** (markdown + zip), and CSV exports of
+every list.
 
 ## What it is
 
@@ -107,9 +113,20 @@ is plugged in.
 - 🔌 Auto-detect & auto-connect on USB attach.
 - 📦 **Artifact library** — captures, wardrive logs and GPX on the phone; one tap
   turns a pcap into hashcat-22000 lines (PMKID + M1/M2 extraction, pure Kotlin).
-- 🔑 **Built-in WPA2 cracker** — CPU wordlist attack (PBKDF2-HMAC-SHA1-4096,
-  hashcat-22000 semantics, KAT-tested). Ships with a built-in wordlist; add your
-  own by URL or file picker. No root, no Termux.
+- 🔑 **Built-in WPA2 cracker** — hashcat-22000 semantics (PMKID and M1/M2), CPU
+  and GPU back ends, KAT-tested. Ships with a built-in wordlist; add your own by
+  URL or file picker. No root, no Termux.
+- ⚙️ **Two native engines, each gated by its own known-answer test** — a C++ core
+  on the phone's cores, and a Vulkan compute engine that runs the 4096 PBKDF2
+  rounds per guess on the graphics cores. Neither is trusted because it compiled:
+  both must reproduce hashcat's published vectors on *this* device, and if they
+  cannot, the app says so and runs the engine it can prove.
+- 🎯 **Target-pinned operations** — every targeted capture is bound to a BSSID
+  checked against the scan ledger before anything is transmitted, and each
+  capture records which BSSID it was aimed at.
+- 🔐 **WPA3-aware, honestly** — SAE-only networks are detected and reported as
+  uncrackable by design (their PMK is not PBKDF2-derived) rather than burned
+  through a wordlist.
 
 ## Protocol (firmware ↔ app)
 
@@ -132,8 +149,10 @@ next launch.
 
 ## Building
 
-Requirements: **JDK 21**, the **Android SDK** (compileSdk 35), and the bundled
-Gradle wrapper (8.9). Point `local.properties` at your SDK:
+Requirements: **JDK 21**, the **Android SDK** (compileSdk 35) with the **NDK**
+(`27.0.12077973`, pinned in `app/build.gradle.kts`) and **CMake** for the native
+cracking engines, and the bundled Gradle wrapper (8.9). Point
+`local.properties` at your SDK:
 
 ```properties
 sdk.dir=/path/to/Android/sdk
@@ -156,8 +175,17 @@ phone install the `arm64-v8a` one — e.g. `app-arm64-v8a-debug.apk`.
 ```
 
 Signed release APKs land at `app/build/outputs/apk/release/` (same per-ABI
-split). Without a `keystore.properties` the release APKs stay unsigned and
-will not install — use the debug builds.
+split) when `keystore.properties` and the keystore it names are present —
+which is the supported way to sideload this build. Without them the release
+APKs stay unsigned and will not install.
+
+Check what an APK really is before installing it (package id, version, ABIs,
+signer):
+
+```bash
+"$ANDROID_SDK/build-tools/35.0.0/aapt2" dump badging app-arm64-v8a-release.apk
+"$ANDROID_SDK/build-tools/35.0.0/apksigner" verify --print-certs app-arm64-v8a-release.apk
+```
 
 ### Release signing
 
@@ -186,6 +214,62 @@ keyPassword=your-key-password
 > this README, in `README`s, or anywhere in the repo. `keystore.properties` and
 > `*.jks` are already git-ignored.
 
+### Cracking engines and their known-answer gates
+
+The cracker has three implementations behind one contract
+(`app/src/main/java/com/marauder/mobile/crack/`): a JVM engine, a native C++ core
+(`app/src/main/cpp/`, reached over JNI), and a Vulkan compute engine that runs
+each guess's 4096 PBKDF2 rounds on the graphics device. Whichever runs, the
+22000 line is parsed by the same Kotlin `CrackCore` and the MIC/PMKID comparison
+is done by the same `verify_with_pmk` — the back ends differ only in where the
+hashing runs, so a GPU run and a CPU run cannot report different things about
+one hash.
+
+Loading the `.so` is not enough to use it, and compiling the shader is not
+enough to use the GPU. Both are gated by a known-answer test that runs on the
+device itself (`NativeCrypto.nativeSelfTest()` / `nativeGpuSelfTest()`): the
+native core must reproduce hashcat's published PMKID and handshake vectors, the
+shader must reproduce the same PMKs this repo's own CPU code produces across
+every ESSID/salt alignment and candidate length. If a gate fails, the engine is
+refused and the crack screen states why, because a subtly wrong engine reports
+"not cracked" for a password that is in the wordlist — the one outcome this app
+must never present as an answer.
+
+Those same gates are runnable on a development host, which is where the shader
+and the batch loop are actually exercised (the phone only has to answer whether
+*its* driver agrees too):
+
+```bash
+# native core + batch loop, no Android or driver needed
+g++ -std=c++17 -O2 -Wall -Wextra -pthread -DMK_SELFTEST_MAIN \
+    wpa_crypto.cpp selftest.cpp -o selftest && ./selftest
+
+# Vulkan engine against a software driver (e.g. mesa-vulkan-drivers / llvmpipe),
+# including CPU↔GPU agreement on one shared set of fixtures
+g++ -std=c++17 -O2 -Wall -Wextra -pthread -DMK_GPU_HOST_TEST \
+    wpa_crypto.cpp vulkan_engine.cpp gpu_host_test.cpp -o gpu_host_test -lvulkan && ./gpu_host_test
+```
+
+Shader sources are compiled into the native library as SPIR-V headers. After
+changing a `.comp`, regenerate them (uses the NDK's `glslc`):
+
+```powershell
+tools\regen_shaders.ps1
+```
+
+### Lab tooling
+
+The same extraction and cracking code is available as command-line tasks, so a
+capture can be checked on a PC without a phone:
+
+```bash
+./gradlew :extractor:extractPcap -PtoolArgs="C:/tmp/cap.pcap -o C:/tmp/hashes.22000.txt"
+./gradlew :extractor:crackHash  -PtoolArgs="C:/tmp/hashes.22000.txt C:/tmp/wordlist.txt"
+```
+
+Raw captures, real 22000 files and wordlists are git-ignored on purpose; only
+synthetic fixtures and published vectors are committed.
+
 ## Project layout
 
 ```
@@ -196,6 +280,12 @@ app/src/main/java/com/marauder/mobile/
 ├── vm/            # MarauderViewModel (state + command orchestration)
 ├── ui/            # Compose screens, components, theme
 └── MainActivity.kt
+app/src/main/java/com/marauder/mobile/crack/   # engine contract + the three engines
+app/src/main/cpp/                              # native core, JNI bridge, Vulkan engine
+└── shader/        # Vulkan compute sources (regenerate headers with tools/regen_shaders.ps1)
+extractor/                                     # pcap -> hashcat-22000 + verifier (pure Kotlin,
+                                               # also the lab command-line tools)
+protocol/                                      # LineParser, shared with tests
 ```
 
 ## Firmware
