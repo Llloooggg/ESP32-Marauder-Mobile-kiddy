@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -34,12 +35,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.marauder.mobile.crack.Backend
+import com.marauder.mobile.data.KeyManagement
 import com.marauder.mobile.data.Wordlist
 import com.marauder.mobile.ui.components.SectionLabel
 import com.marauder.mobile.ui.components.StatChip
@@ -76,6 +82,10 @@ fun CrackScreen(
 ) {
     val state by cvm.state.collectAsState()
     LaunchedEffect(artifactName) { cvm.open(artifactName) }
+
+    // A WPA3-SAE-only target cannot be recovered by mode 22000, so starting such a
+    // run is a deliberate extra confirmation rather than a silent tap.
+    var pendingSaeRun by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -192,6 +202,25 @@ fun CrackScreen(
                 }
             }
 
+            if (state.saeOnly.isNotEmpty()) {
+                item { SectionLabel("WPA3-SAE inside this target") }
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            KeyManagement.explainSae(state.saeOnly, state.aimedBssid).orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Danger,
+                        )
+                        Text(
+                            "SAE-only BSSID(s): " + state.saeOnly.joinToString(),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MarauderTextDim,
+                        )
+                    }
+                }
+            }
+
             item { SectionLabel("Backend") }
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -215,7 +244,9 @@ fun CrackScreen(
                     RunButton(
                         running = state.running,
                         enabled = state.canRun || state.running,
-                        onStart = { cvm.start() },
+                        onStart = {
+                            if (state.saeOnly.isNotEmpty()) pendingSaeRun = true else cvm.start()
+                        },
                         onStop = { cvm.stop() },
                         modifier = Modifier.weight(1.4f),
                     )
@@ -277,6 +308,28 @@ fun CrackScreen(
                 )
             }
         }
+    }
+
+    if (pendingSaeRun) {
+        AlertDialog(
+            onDismissRequest = { pendingSaeRun = false },
+            icon = { Icon(Icons.Filled.Stop, contentDescription = null, tint = Danger) },
+            title = { Text("This run cannot succeed") },
+            text = {
+                Text(
+                    (KeyManagement.explainSae(state.saeOnly, state.aimedBssid).orEmpty()) +
+                        "\n\nRunning the wordlist anyway will spend the phone's time and report " +
+                        "\"not found\" without the password ever having been testable.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingSaeRun = false
+                    cvm.start()
+                }) { Text("Run anyway", color = Warning) }
+            },
+            dismissButton = { TextButton(onClick = { pendingSaeRun = false }) { Text("Stop here") } },
+        )
     }
 }
 

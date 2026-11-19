@@ -29,6 +29,13 @@ data class HashExtractResult(
     val lostBytes: Int = 0,         // bytes skipped while getting the record stream back
     /** BSSIDs the extracted material actually belongs to, uppercase, sorted. */
     val networks: List<String> = emptyList(),
+    // --- key management: WPA2-PSK (crackable) vs WPA3-SAE (not a password hash) ----
+    /** BSSID → what that network advertised about its key management, human words. */
+    val security: Map<String, String> = emptyMap(),
+    /** BSSIDs whose only key-management option is SAE: mode 22000 cannot recover them. */
+    val saeOnlyNetworks: List<String> = emptyList(),
+    /** SAE (WPA3) authentication frames seen — direct evidence of dragonfly on air. */
+    val saeAuthFrames: Int = 0,
 ) {
     val usable: Boolean get() = hashLines.isNotEmpty()
 }

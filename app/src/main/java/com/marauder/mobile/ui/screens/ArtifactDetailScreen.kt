@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import com.marauder.mobile.data.Artifact
 import com.marauder.mobile.data.ArtifactRecord
 import com.marauder.mobile.data.CaptureAttribution
+import com.marauder.mobile.data.KeyManagement
 import com.marauder.mobile.ui.copyToDocument
 import com.marauder.mobile.ui.components.SectionLabel
 import com.marauder.mobile.ui.components.StatChip
@@ -181,6 +182,51 @@ fun ArtifactDetailScreen(
                     }
                 }
                 else -> Unit
+            }
+
+            // Whether a cracker can work on this file at all is decided by the network's
+            // key management, so it is stated next to the counts rather than left to be
+            // inferred: an SAE-only (WPA3) network has no password hash in here.
+            val kmVerdicts = remember(record.meta) { KeyManagement.verdicts(record.meta) }
+            val saeOnly = remember(record.meta) { KeyManagement.saeOnly(record.meta) }
+            if (kmVerdicts.isNotEmpty()) {
+                SectionLabel("Key management · what a cracker can do with it")
+                Surface(
+                    shape = RoundedCornerShape(11.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        kmVerdicts.forEach { v ->
+                            Column {
+                                Text(
+                                    v.bssid,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = if (v.saeOnly) Danger else MarauderCyan,
+                                )
+                                Text(
+                                    v.label,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (v.saeOnly) Danger else MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                        }
+                        val frames = record.meta[KeyManagement.SAE_FRAMES]?.toIntOrNull() ?: 0
+                        if (frames > 0) {
+                            Text(
+                                "$frames SAE authentication frame(s) in this capture — that is the WPA3 dragonfly " +
+                                    "exchange on air, independent of what the beacons claim.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MarauderTextDim,
+                            )
+                        }
+                    }
+                }
+            }
+            KeyManagement.explainSae(saeOnly, aimed)?.let { why ->
+                SectionLabel("Offline cracking does not apply here")
+                Text(why, style = MaterialTheme.typography.bodySmall, color = Danger)
             }
 
             SectionLabel("What this file holds")

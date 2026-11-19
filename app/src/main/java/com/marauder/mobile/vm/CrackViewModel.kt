@@ -9,6 +9,8 @@ import com.marauder.mobile.crack.CrackConfig
 import com.marauder.mobile.crack.CrackEvent
 import com.marauder.extractor.CrackCore
 import com.marauder.extractor.HashInspection
+import com.marauder.mobile.data.ArtifactRecord
+import com.marauder.mobile.data.KeyManagement
 import com.marauder.mobile.data.Wordlist
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,6 +50,14 @@ data class CrackUiState(
      * not match" — the line, not the password, is usually the problem.
      */
     val inspections: List<HashInspection> = emptyList(),
+
+    /**
+     * BSSIDs in this target that advertise WPA3-SAE only, plus the BSSID the capture
+     * was aimed at. A 22000 line cannot be recovered from an SAE-only network (its
+     * PMK is not PBKDF2-derived), so the screen warns before burning wordlist time.
+     */
+    val saeOnly: List<String> = emptyList(),
+    val aimedBssid: String? = null,
 ) {
     val canRun: Boolean get() = hashLines.isNotEmpty() && selected.isNotEmpty() && !running
     val progress: Float get() = if (totalGuesses <= 0) 0f else (doneGuesses.toFloat() / totalGuesses).coerceIn(0f, 1f)
@@ -85,6 +95,8 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
             pmkid = record?.meta?.get("pmkid")?.toIntOrNull() ?: 0,
             handshakes = record?.meta?.get("handshakes")?.toIntOrNull() ?: 0,
             alreadyCracked = record?.meta?.get("cracked"),
+            saeOnly = KeyManagement.saeOnly(record?.meta ?: emptyMap()),
+            aimedBssid = record?.meta?.get(ArtifactRecord.TARGET_BSSID),
             wordlists = wordlists,
             selected = _state.value.selected.filter { name -> wordlists.any { it.fileName == name } }
                 .ifEmpty { listOfNotNull(app.wordlists.preferredWordlist()?.fileName) },

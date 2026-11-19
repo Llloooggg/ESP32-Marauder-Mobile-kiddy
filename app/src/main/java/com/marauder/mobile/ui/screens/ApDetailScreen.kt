@@ -266,6 +266,18 @@ fun ApDetailScreen(
             if (ap.sec == 0) {
                 item { Hint("Open network — no handshake or PMKID exists.", MarauderTextDim) }
             }
+            if (Security.offersSae(ap.sec)) {
+                item {
+                    Hint(
+                        "This network advertises WPA3-SAE. The firmware flags SAE as soon as that suite appears in " +
+                            "the AKM list, which includes WPA2/WPA3 transition mode where a PSK fallback still " +
+                            "exists — so the capture attempt is still worth doing. What decides whether the result " +
+                            "is crackable is the extractor's per-network verdict in the capture library: an SAE-only " +
+                            "network derives its PMK from the dragonfly exchange, and no wordlist can recover that.",
+                        Warning,
+                    )
+                }
+            }
 
             item { SectionLabel("Actions") }
             items(actions.filter { it.requiresCap == null || info?.has(it.requiresCap) == true }) { action ->
@@ -439,7 +451,7 @@ private fun ApHeader(ap: DeviceMessage.Ap) {    Surface(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatChip("CH", ap.channel.toString(), CatWifi)
                 StatChip("RSSI", "${ap.rssi} dBm", if (ap.rssi >= -65) Success else if (ap.rssi >= -80) Warning else Danger)
-                StatChip("SEC", Security.label(ap.sec), if (ap.sec == 0) Danger else Success)
+                StatChip("SEC", Security.label(ap.sec), if (ap.sec == 0) Danger else if (Security.offersSae(ap.sec)) Warning else Success)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatChip("CLIENTS", ap.stations.toString(), MarauderCyan)

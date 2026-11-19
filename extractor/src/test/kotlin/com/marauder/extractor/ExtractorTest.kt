@@ -462,4 +462,160 @@ class ExtractorTest {
         return Mac.getInstance("HmacSHA1").apply { init(SecretKeySpec(kde, "HmacSHA1")) }.doFinal(m2)
             .copyOfRange(0, 16)
     }
+
+    // ---- key management: WPA2-PSK vs WPA3-SAE -----------------------------------------
+    // A mode-22000 line only makes sense when the network derives its PMK with
+    // PBKDF2(SSID, password). The extractor's job is to say which networks that is
+    // true for, read from the network's own RSN element and its authentication
+    // frames — never assumed from "it looked like a WPA2 handshake".
+
+    /** Beacon whose RSN AKM list holds [suites] (each 4 bytes, hex, space-separated). */
+    private fun beaconAkm(ssid: ByteArray, suites: String): ByteArray {
+        val list = suites.split(" ").filter { it.isNotBlank() }
+        val count = "%04x".format(list.size)
+        val rsn = hexBytes("0001 000fac04 0001 000fac04 $count ${list.joinToString("")}")
+        val ie = ArrayList<Byte>()
+        ie.add(0); ie.add(ssid.size.toByte()); ie.addAll(ssid.toList())
+        ie.add(48); ie.add(rsn.size.toByte()); ie.addAll(rsn.toList())
+        val fixed = hexBytes("8000 0000") + ByteArray(6) { 0xFF.toByte() } + apMac + apMac +
+            hexBytes("0000") + ByteArray(8) + hexBytes("6400 0100")
+        return fixed + ie.toByteArray()
+    }
+
+    /**
+     * 802.11 Authentication frame: fixed body is algorithm(2) seq(2) status(2) at 24.
+     * algorithm 3 = SAE (the WPA3 dragonfly commit/confirm); frame control byte 0xB0.
+     */
+    private fun authFrame(algorithm: Int, seq: Int, status: Int, addr1: ByteArray, addr2: ByteArray): ByteArray {
+        val f = ByteArray(30)
+        f[0] = 0xB0.toByte() // type management (0), subtype authentication (11) -> 11<<4
+        System.arraycopy(addr1, 0, f, 4, 6)
+        System.arraycopy(addr2, 0, f, 10, 6)
+        System.arraycopy(addr2, 0, f, 16, 6)
+        f[24] = algorithm.toByte(); f[25] = (algorithm ushr 8).toByte()
+        f[26] = seq.toByte(); f[27] = (seq ushr 8).toByte()
+        f[28] = status.toByte(); f[29] = (status ushr 8).toByte()
+        return f
+    }
+
+    /** (Re)Association Request: fcLo 0x00, element list begins at 34. */
+    private fun assocRequest(rsn: ByteArray, addr1: ByteArray, addr2: ByteArray): ByteArray {
+        val ie = hexBytes("01 02 8c 12") + rsn // supported rates (len 2) then the RSN element
+        val f = ByteArray(34 + ie.size)
+        f[0] = 0x00
+        System.arraycopy(addr1, 0, f, 4, 6)   // addr1 = the AP this request is addressed to
+        System.arraycopy(addr2, 0, f, 10, 6)  // addr2 = the client
+        System.arraycopy(addr1, 0, f, 16, 6)  // addr3 = BSSID
+        System.arraycopy(ie, 0, f, 34, ie.size)
+        return f
+    }
+
+    /** RSN element (id 48) whose AKM list holds [suites]; body = 16 bytes + 4 per suite. */
+    private fun rsnElement(suites: String): ByteArray {
+        val list = suites.split(" ").filter { it.isNotBlank() }
+        val body = hexBytes("0001 000fac04 0001 000fac04 %04x %s 0000".format(list.size, list.joinToString("")))
+        return byteArrayOf(48, body.size.toByte()) + body
+    }
+
+    @Test
+    fun saeOnlyAkmIsReportedAsNotCrackable() {
+        val pcap = PcapBuilder()
+        pcap.frame(beaconAkm(ssid, "000fac08"))
+        pcap.frame(dataEapol(pmkidM1(officialPmkid), fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true))
+        val rep = run(pcap.bytes())
+
+        assertEquals(SecurityMode.SAE_ONLY, rep.networks.single().mode)
+        assertEquals(listOf("SAE"), rep.networks.single().akmLabels)
+        assertEquals(1, rep.hashes.size)
+        assertEquals(SecurityMode.SAE_ONLY, rep.hashes[0].security)
+        assertEquals(1, rep.saeOnlyHashes)
+        assertTrue(rep.notes.any { it.contains("WPA3-SAE only") })
+    }
+
+    @Test
+    fun pskAndSaeTogetherIsTransitionModeStillWorthAttacking() {
+        val pcap = PcapBuilder()
+        pcap.frame(beaconAkm(ssid, "000fac02 000fac08"))
+        pcap.frame(dataEapol(pmkidM1(officialPmkid), fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true))
+        val rep = run(pcap.bytes())
+
+        assertEquals(SecurityMode.MIXED_PSK_SAE, rep.networks.single().mode)
+        assertEquals(SecurityMode.MIXED_PSK_SAE, rep.hashes[0].security)
+        assertEquals(0, rep.saeOnlyHashes)
+        assertTrue(rep.notes.none { it.contains("WPA3-SAE only") })
+    }
+
+    @Test
+    fun ftPskNetworkIsStillPskNotSae() {
+        // WPA*03/04 (FT / OKC) records are a roaming artefact, not WPA3: the AKM
+        // list here says FT-PSK, so mode 22000 applies.
+        val pcap = PcapBuilder()
+        pcap.frame(beaconAkm(ssid, "000fac04"))
+        pcap.frame(dataEapol(pmkidM1(officialPmkid), fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true))
+        val rep = run(pcap.bytes())
+        assertEquals(SecurityMode.PSK, rep.networks.single().mode)
+        assertEquals(SecurityMode.PSK, rep.hashes[0].security)
+    }
+
+    @Test
+    fun saeAuthFramesAreCountedAndAttributedToTheAp() {
+        val commit = authFrame(algorithm = 3, seq = 1, status = 0, addr1 = apMac, addr2 = staMac)
+        val confirm = authFrame(algorithm = 3, seq = 2, status = 0, addr1 = staMac, addr2 = apMac)
+        val pcap = PcapBuilder()
+        pcap.frame(beaconAkm(ssid, "000fac08"))
+        pcap.frame(commit)
+        pcap.frame(confirm)
+        pcap.frame(authFrame(algorithm = 0, seq = 1, status = 0, addr1 = apMac, addr2 = staMac)) // open system: not SAE
+        val rep = run(pcap.bytes())
+
+        assertEquals(2, rep.saeAuthFrames)
+        val net = rep.networks.first { it.bssid == "fc:69:0c:15:82:64" }
+        assertEquals(2, net.saeAuthFrames)
+        assertEquals(SecurityMode.SAE_ONLY, net.mode)
+        assertTrue(rep.notes.any { it.contains("SAE authentication frame") })
+    }
+
+    @Test
+    fun saeExchangeWithoutAnyRsnElementStillMarksTheNetworkSae() {
+        // No beacon at all: the dragonfly exchange on air is the only evidence, and
+        // "SAE seen" must not be silently reported as unknown/WPA2.
+        val pcap = PcapBuilder()
+        pcap.frame(authFrame(algorithm = 3, seq = 1, status = 0, addr1 = apMac, addr2 = staMac))
+        val rep = run(pcap.bytes())
+        assertEquals(1, rep.saeAuthFrames)
+        val net = rep.networks.first { it.saeAuthFrames > 0 }
+        assertEquals(SecurityMode.SAE_ONLY, net.mode)
+        assertEquals(1, net.saeAuthFrames)
+    }
+
+    @Test
+    fun implausibleSaeFrameIsCountedButNotAttributed() {
+        // seq 0 is not a valid SAE transaction sequence: attributing it would put
+        // the frames under the wrong endpoint.
+        val pcap = PcapBuilder()
+        pcap.frame(authFrame(algorithm = 3, seq = 0, status = 0, addr1 = apMac, addr2 = staMac))
+        val rep = run(pcap.bytes())
+        assertEquals(1, rep.saeAuthFrames)
+        assertTrue(rep.networks.none { it.saeAuthFrames > 0 })
+        assertTrue(rep.notes.any { it.contains("could not be attributed") })
+    }
+
+    @Test
+    fun associationRequestAkmListDecidesTheModeWhenNoBeaconWasCaptured() {
+        val pcap = PcapBuilder()
+        pcap.frame(assocRequest(rsnElement("000fac08"), addr1 = apMac, addr2 = staMac))
+        val rep = run(pcap.bytes())
+        val net = rep.networks.first { it.bssid == "fc:69:0c:15:82:64" }
+        assertEquals(SecurityMode.SAE_ONLY, net.mode)
+        assertEquals(listOf("SAE"), net.akmLabels)
+        assertEquals("(no beacon in capture)", net.essid)
+    }
+
+    @Test
+    fun enterpriseAkmIsSeparatedFromPersonalNetworks() {
+        val pcap = PcapBuilder()
+        pcap.frame(beaconAkm(ssid, "000fac01"))
+        val rep = run(pcap.bytes())
+        assertEquals(SecurityMode.ENTERPRISE, rep.networks.single().mode)
+    }
 }

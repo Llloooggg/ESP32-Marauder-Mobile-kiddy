@@ -35,6 +35,19 @@ object Extractor {
     private const val MAGIC_NS_BE: Int = 0xA1B23C4D.toInt()
     private const val MAX_RECORD: Int = 262_144
 
+    /**
+     * AKM suite ids, grouped by what mode-22000 can do with them. Values follow the
+     * IEEE registry (the same numbering hcxtools' `AK_*`/`TAK_*` constants derive
+     * from): PSK-family suites derive the PMK with PBKDF2(SSID, password), which is
+     * exactly what mode 22000 tests; the SAE family derives it from the dragonfly
+     * exchange, so a captured SAE handshake is not a password hash at all. Both the
+     * old (11/12) and current (22/23) numbering of SAE-SHA384 are covered.
+     */
+    private val PSK_AKMS = setOf(2, 4, 6, 7, 20, 24)
+    private val SAE_AKMS = setOf(8, 9, 11, 12, 22, 23)
+    private val ENTERPRISE_AKMS = setOf(1, 3, 5, 10, 13, 14, 15, 25)
+    private val OWE_AKMS = setOf(18, 19)
+
     /** Cap for reading the capture into memory (the resync pass needs random access). */
     private const val MAX_FILE: Int = 64 * 1024 * 1024
 
@@ -54,6 +67,8 @@ object Extractor {
 
         val essids = HashMap<String, ByteArray>()     // bssid → raw SSID bytes (from beacons)
         val keyverHint = HashMap<String, Int>()       // bssid → keyver guessed from RSN IE
+        val akms = HashMap<String, MutableSet<Int>>() // bssid → AKM suite ids it advertised
+        val saeSeen = HashMap<String, Int>()          // bssid → SAE auth frames attributed to it
         val m1s = HashMap<String, MutableList<KeyFrame>>()   // "aa|spa" → M1 candidates
         val m3s = HashMap<String, MutableList<KeyFrame>>()   // "aa|spa" → M3 candidates (ANonce source)
         val m2s = HashMap<String, MutableList<KeyFrame>>()   // "aa|spa" → M2 candidates (MIC + SNonce)
@@ -82,7 +97,19 @@ object Extractor {
                             if (ssid != null) essids.putIfAbsent(bssid, ssid)
                             val kv = rsnKeyver(b, ieStart)
                             if (kv != 0) keyverHint.putIfAbsent(bssid, kv)
+                            addAkm(akms, bssid, akmSuites(b, ieStart, stats))
                         }
+                    } else if (subtype == 0x00 || subtype == 0x02) { // Association / Reassociation Request
+                        // The client's RSN element names the AKM the pair actually
+                        // negotiates, which a beacon alone cannot tell us. Body layout:
+                        // capability(2) listen(2) current AP(6) [+interval(4) if reassoc],
+                        // so the element list begins at 34 / 38.
+                        val ieStart = if (subtype == 0x02) 38 else 34
+                        if (b.size >= ieStart + 2) {
+                            addAkm(akms, mac(b, 4), akmSuites(b, ieStart, stats))
+                        }
+                    } else if (subtype == 0x0B) { // Authentication
+                        saeAuthentication(b, saeSeen, stats)
                     }
                 }
 
@@ -151,6 +178,12 @@ object Extractor {
 
         val pairs = pickPairs(m1s, m2s, m3s, stats)
 
+        // What each network claimed about its key management, decided before the
+        // hashes are assembled: a line taken from an SAE-only network cannot be
+        // cracked by mode 22000 and saying so now saves a wordlist run that would
+        // report "no password found" without ever having had a chance.
+        val security = securityOf(essids, akms, saeSeen, stats)
+
         // Assemble the hashcat lines. The PBKDF2 salt is the raw SSID, so every
         // credential needs one: a beacon is the authoritative source, the host's
         // own scan list is the fallback.
@@ -170,6 +203,7 @@ object Extractor {
                 messagePair = 255,
                 keyver = hit.keyver,
                 micLenBytes = 16,
+                security = security[hit.aa]?.mode ?: SecurityMode.UNKNOWN,
             ).apply { line = hashLine }
         }
         for (p in pairs) {
@@ -191,8 +225,10 @@ object Extractor {
                 messagePair = p.mp,
                 keyver = keyVerFromEapol(p.m2.eapol),
                 micLenBytes = 16,
+                security = security[p.aa]?.mode ?: SecurityMode.UNKNOWN,
             ).apply { line = hashLine }
         }
+        val saeOnlyHashes = out.count { it.security == SecurityMode.SAE_ONLY }
 
         return ExtractReport(
             hashes = out,
@@ -214,6 +250,9 @@ object Extractor {
             shortEapol = stats.shortEapol,
             pairsNoSsid = stats.pairsNoSsid,
             ssidFromScan = stats.ssidFromScan,
+            networks = security.values.sortedBy { it.bssid },
+            saeAuthFrames = stats.saeFrames,
+            saeOnlyHashes = saeOnlyHashes,
         )
     }
 
@@ -349,6 +388,145 @@ object Extractor {
         for (i in at until at + len) sb.append("%02x".format(b[i].toInt() and 0xFF))
         return sb.toString()
     }
+
+    // --- key management (WPA2-PSK vs WPA3-SAE) -------------------------------------
+
+    /**
+     * AKM suite ids from an RSN (element 48) or legacy WPA (element 221, OUI
+     * 00-50-F2) information element, walking the element list from [ieStart].
+     * Empty when no RSN/WPA element is present, which the caller reports as
+     * UNKNOWN rather than assuming WPA2.
+     *
+     * Suite ids are the 4th byte of an OUI 00-0F-AC selector (the numbers are the
+     * IEEE registry values hcxtools' `AK_*` constants use too): 1 = 802.1X,
+     * 2 = PSK, 3 = FT, 4/7 = FT-PSK, 5 = 802.1X-SHA256, 6 = PSK-SHA256,
+     * 8 = SAE, 9 = FT-SAE, 18 = OWE, 22 = SAE-SHA384, 23 = FT-SAE-SHA384.
+     */
+    private fun akmSuites(b: ByteArray, ieStart: Int, stats: Stats): Set<Int> {
+        var i = ieStart
+        while (i + 1 < b.size) {
+            val id = b[i].toInt() and 0xFF
+            val len = b[i + 1].toInt() and 0xFF
+            if (i + 2 + len > b.size) break
+            if (id == 48 && len >= 10) {
+                // ver(2) group cipher(4) pairwise count(2) [suites] akm count(2) [suites]
+                var at = i + 2 + 2 + 4
+                val pairwise = be16(b, at); at += 2 + pairwise * 4
+                if (at + 2 > i + 2 + len) { stats.rsnTruncated++; return emptySet() }
+                val akms = be16(b, at); at += 2
+                if (at + akms * 4 > i + 2 + len) { stats.rsnTruncated++; return emptySet() }
+                val out = LinkedHashSet<Int>(akms)
+                for (k in 0 until akms) {
+                    val o = at + k * 4
+                    if (b[o] == 0x00.toByte() && b[o + 1] == 0x0F.toByte() && b[o + 2] == 0xAC.toByte()) {
+                        out += b[o + 3].toInt() and 0xFF
+                    }
+                }
+                return out
+            }
+            // Legacy WPA IE: its AKM list uses OUI 00-50-F2, where 02 means PSK.
+            if (id == 221 && len >= 4 && b[i + 2] == 0x00.toByte() && b[i + 3] == 0x50.toByte() &&
+                b[i + 4] == 0xF2.toByte() && b[i + 5] == 0x02.toByte()
+            ) {
+                return setOf(2) // WPA1 is pre-SAE: whatever it negotiated, it is PSK
+            }
+            i += 2 + len
+        }
+        return emptySet()
+    }
+
+    private fun addAkm(target: HashMap<String, MutableSet<Int>>, bssid: String, suites: Set<Int>) {
+        if (suites.isEmpty()) return
+        target.getOrPut(bssid) { LinkedHashSet() }.addAll(suites)
+    }
+
+    /**
+     * SAE (WPA3) authentication frames. The Authentication frame's fixed body is
+     * algorithm(2) seq(2) status(2) at offset 24, and the SAE commit/confirm ride in
+     * an element after that, so counting the frames is what identifies the dragonfly
+     * exchange — hashcat/hcxtools count them the same way (`auth->algorithm == SAE`).
+     *
+     * Attribution follows the transaction sequence: the commit is sent *to* the AP
+     * (addr1 = BSSID), the confirm / any frame with a status code comes *from* it
+     * (addr2 = BSSID). Guessing the other way would blame a client for its own SAE
+     * frames, so an implausible frame is counted but not attributed.
+     */
+    private fun saeAuthentication(b: ByteArray, saeSeen: HashMap<String, Int>, stats: Stats) {
+        if (b.size < 30) return
+        val algorithm = le16(b, 24)
+        if (algorithm != 3) return
+        stats.saeFrames++
+        val seq = le16(b, 26)
+        val status = le16(b, 28)
+        val fromAp = seq >= 2 || status != 0
+        val bssid = if (fromAp) mac(b, 10) else mac(b, 4)
+        if (seq == 0) { stats.saeUnattributed++; return }
+        saeSeen.merge(bssid, 1, Int::plus)
+    }
+
+    /** Per-BSSID security verdict: what it advertised, plus what was seen on air. */
+    private fun securityOf(
+        essids: Map<String, ByteArray>,
+        akms: Map<String, Set<Int>>,
+        saeSeen: Map<String, Int>,
+        stats: Stats,
+    ): Map<String, NetworkSecurity> {
+        val bssids = LinkedHashSet<String>()
+        bssids += essids.keys; bssids += akms.keys; bssids += saeSeen.keys
+        val out = LinkedHashMap<String, NetworkSecurity>()
+        for (bssid in bssids) {
+            val suites = akms[bssid].orEmpty()
+            val saeFrames = saeSeen[bssid] ?: 0
+            val hasPsk = suites.any { it in PSK_AKMS }
+            val hasSae = suites.any { it in SAE_AKMS }
+            val hasEnterprise = suites.isNotEmpty() && suites.all { it in ENTERPRISE_AKMS }
+            val hasOwe = suites.isNotEmpty() && suites.all { it in OWE_AKMS }
+            val mode = when {
+                hasSae && hasPsk -> SecurityMode.MIXED_PSK_SAE
+                hasSae -> SecurityMode.SAE_ONLY
+                hasPsk -> SecurityMode.PSK
+                hasEnterprise -> SecurityMode.ENTERPRISE
+                hasOwe -> SecurityMode.OWE
+                // No RSN element, but a WPA3 dragonfly exchange was seen on this BSSID.
+                else -> if (saeFrames > 0) SecurityMode.SAE_ONLY else SecurityMode.UNKNOWN
+            }
+            if (mode == SecurityMode.SAE_ONLY) stats.saeOnlyNetworks++
+            out[bssid] = NetworkSecurity(
+                bssid = bssid,
+                essid = essids[bssid]?.let { essidLabel(it) } ?: "(no beacon in capture)",
+                akmLabels = suites.sorted().map { akmLabel(it) },
+                mode = mode,
+                saeAuthFrames = saeFrames,
+            )
+        }
+        return out
+    }
+
+    private fun akmLabel(suite: Int): String = when (suite) {
+        1 -> "802.1X"
+        2 -> "PSK"
+        3 -> "FT-8021X"
+        4 -> "FT-PSK"
+        5 -> "802.1X-SHA256"
+        6 -> "PSK-SHA256"
+        7 -> "FT-PSK"
+        8 -> "SAE"
+        9 -> "FT-SAE"
+        10 -> "802.1X-SUITEB"
+        11 -> "SAE-SHA384"
+        12 -> "FT-SAE-SHA384"
+        13 -> "FILS-SHA256"
+        14 -> "FILS-SHA384"
+        17 -> "PFS"
+        18 -> "OWE"
+        19 -> "FT-OWE"
+        22 -> "SAE-SHA384"
+        23 -> "FT-SAE-SHA384"
+        else -> "AKM-$suite"
+    }
+
+    private fun le16(b: ByteArray, at: Int): Int =
+        (b[at].toInt() and 0xFF) or ((b[at + 1].toInt() and 0xFF) shl 8)
 
     /**
      * PMKID inside the EAPOL-Key frame. Two real-world encodings are accepted:
@@ -626,6 +804,10 @@ object Extractor {
         var lostBytes = 0
         var pairsNoSsid = 0
         var ssidFromScan = 0
+        var saeFrames = 0
+        var saeUnattributed = 0
+        var saeOnlyNetworks = 0
+        var rsnTruncated = 0
 
         private val freeNotes = ArrayList<String>()
         private val repeated = LinkedHashMap<String, Int>()
@@ -647,6 +829,21 @@ object Extractor {
                 "(no beacon in the capture and the network is not in the scan list) — the SSID is the PBKDF2 salt, " +
                 "so without it no cracker can work"
             if (ssidFromScan > 0) out += "$ssidFromScan credential(s) used the SSID from the app's scan list (no beacon in this capture)"
+            if (saeOnlyNetworks > 0) {
+                out += "$saeOnlyNetworks network(s) advertise WPA3-SAE only: their PMK comes from the dragonfly " +
+                    "exchange, not from PBKDF2(SSID, password), so a mode-22000 wordlist run cannot recover it — " +
+                    "no GPU or wordlist changes that. The firmware's `sniffsae` records the exchange as evidence; " +
+                    "attacking such a network means the client side, not offline cracking"
+            }
+            if (saeFrames > 0) {
+                out += "$saeFrames SAE authentication frame(s) seen (the WPA3 handshake) — if a handshake was " +
+                    "carved from one of these networks it will not crack"
+            }
+            if (saeUnattributed > 0) {
+                out += "$saeUnattributed SAE frame(s) could not be attributed to a network (implausible transaction " +
+                    "sequence) — counted, not assigned to a BSSID"
+            }
+            if (rsnTruncated > 0) out += "$rsnTruncated RSN element(s) cut short — their key-management list is incomplete"
             out += repeated.entries.joinToString("; ") { "${it.value}× ${it.key}" }
             return out.filter { it.isNotBlank() }
         }

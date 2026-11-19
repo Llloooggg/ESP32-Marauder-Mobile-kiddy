@@ -203,6 +203,13 @@ class ArtifactsRepository(context: Context) {
             // BSSID the operation was aimed at, so "wrong network" is visible rather
             // than something the user has to notice by cross-reading MACs.
             "networks" to result.networks.joinToString(" "),
+            // Key management per network: an SAE-only (WPA3) network has no password
+            // hash to recover, and that has to be on the record, not rediscovered by
+            // running a wordlist that cannot possibly succeed.
+            "sae_frames" to result.saeAuthFrames.toString(),
+            "sae_only" to result.saeOnlyNetworks.joinToString(" "),
+            "netsec" to result.security.entries.sortedBy { it.key }
+                .joinToString("; ") { "${it.key}=${it.value}" },
         )
         val attribution = CaptureAttribution.verdict(
             artifact.record.meta[ArtifactRecord.TARGET_BSSID],
