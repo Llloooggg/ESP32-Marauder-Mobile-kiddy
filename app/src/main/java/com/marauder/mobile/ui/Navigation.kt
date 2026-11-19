@@ -67,43 +67,11 @@ import com.marauder.mobile.usb.UsbSerialManager
 import com.marauder.mobile.vm.MarauderViewModel
 
 /**
- * Route map. The product flow is connect → home → scan → ap index → mission id;
- * the original command tree (menu subtree, live, analyzer, list) stays reachable
- * from Home's Toolbox, so no firmware command becomes unreachable.
+ * Routes and the rule about which of them need a board live in `Routes.kt` (same package). The
+ * product flow is home → scan → ap index → mission id; the original command tree (menu subtree,
+ * live, analyzer, list) stays reachable from Home's toolbox, so no firmware command becomes
+ * unreachable.
  */
-private object Routes {
-    const val CONNECT = "connect"
-    const val HOME = "home"
-    const val SCAN = "scan"
-    const val ARTIFACTS = "artifacts"
-    const val ARTIFACT = "artifact"
-    const val WORDLISTS = "wordlists"
-    const val CRACK = "crack"
-    const val MISSION = "mission"
-    const val AP = "ap"
-    const val MENU = "menu"
-    const val LIST = "list"
-    const val CONSOLE = "console"
-    const val ANALYZER = "analyzer"
-    const val LIVE = "live"
-    const val ABOUT = "about"
-    const val SETTINGS = "settings"
-    const val BOARD_SETTINGS = "board_settings"
-    const val POSTURE = "posture"
-    const val SCENARIOS = "scenarios"
-    const val FLASH = "flash"
-    const val EVIL_PORTAL = "evil_portal_screen"
-
-    fun menu(id: String) = "$MENU/$id"
-    fun ap(bssid: String) = "$AP/${Uri.encode(bssid)}"
-    fun mission(id: Long) = "$MISSION/$id"
-    fun artifact(name: String) = "$ARTIFACT/${Uri.encode(name)}"
-    fun crack(name: String) = "$CRACK/${Uri.encode(name)}"
-    fun list(type: ListType) = "$LIST/${type.name}"
-    fun analyzer(kind: AnalyzerKind, command: String) = "$ANALYZER/${kind.name}/${Uri.encode(command)}"
-    fun live(title: String, command: String) = "$LIVE/${Uri.encode(title)}/${Uri.encode(command)}"
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppRoot() {
@@ -153,10 +121,30 @@ fun AppRoot() {
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { inner ->
         val termsVisible by vm.termsVisible.collectAsState()
+        val linkState by vm.status.collectAsState()
         Box(Modifier.fillMaxSize().padding(inner)) {
-            NavHost(
+            // A screen that asks the board something is answered where the person is standing, rather
+            // than by moving them to the connect screen: a tab that lands somewhere else reads as a
+            // fault, and the screen it landed on had no way back. The rule of which screens these are
+            // lives in `Routes.needsBoard`; the flasher is the one exception, because it runs while the
+            // serial session is down on purpose - it holds the port itself.
+            val blockedByLink = Routes.needsBoard(currentRoute) &&
+                currentRoute != Routes.FLASH &&
+                linkState != UsbSerialManager.Status.CONNECTED
+            if (blockedByLink) {
+                NoBoardState(
+                    heading = Routes.headingFor(currentRoute),
+                    connecting = linkState == UsbSerialManager.Status.CONNECTING,
+                    onBack = { nav.popBackStack() },
+                    onOpenConnect = { nav.navigate(Routes.CONNECT) },
+                )
+            } else NavHost(
                 navController = nav,
-                startDestination = Routes.CONNECT,
+                // Home, not the connect screen. The app has a life without a board - the captures it
+                // saved, the wordlists it holds, the cracker that works on those files - and a board
+                // that is already plugged in used to have to be bounced off the connect screen on the
+                // way into it. Where a screen really does need the link, `ConnectionGate` says so.
+                startDestination = Routes.HOME,
                 modifier = Modifier.fillMaxSize(),
             ) {
 
@@ -179,6 +167,7 @@ fun AppRoot() {
                     onOpenPosture = { nav.navigate(Routes.POSTURE) },
                     onOpenScenarios = { nav.navigate(Routes.SCENARIOS) },
                     onDisconnect = { vm.disconnect() },
+                    onOpenConnect = { nav.navigate(Routes.CONNECT) },
                 )
             }
 
@@ -392,9 +381,15 @@ fun AppRoot() {
 }
 
 /**
- * Steers the user between the connect screen and the product root as the link goes
- * down/up. Missions survive navigation (they are supervised by the ViewModel), so
- * only the connection itself forces a redirect here.
+ * One job left for the link in navigation: once the link is up, get out of the connect screen.
+ *
+ * The other direction used to be handled here - anyone without a link was moved to the connect screen
+ * from wherever they were - and that is what made tabs behave like faults: a tap on "Scan" landed on a
+ * different screen, which then had no way back. Screens that need the board now say so in place
+ * (`NoBoardState`, and `Routes.needsBoard` decides which ones), so nobody is moved anywhere.
+ *
+ * Missions survive navigation either way (they are supervised by the ViewModel), so nothing here stops
+ * or starts work.
  */
 @Composable
 private fun ConnectionGate(vm: MarauderViewModel, nav: NavHostController) {
@@ -403,26 +398,11 @@ private fun ConnectionGate(vm: MarauderViewModel, nav: NavHostController) {
     val currentRoute = backStackEntry?.destination?.route
 
     LaunchedEffect(status, currentRoute) {
-        when (status) {
-            UsbSerialManager.Status.CONNECTED -> {
-                if (currentRoute == Routes.CONNECT) {
-                    nav.navigate(Routes.HOME) {
-                        popUpTo(Routes.CONNECT) { inclusive = true }
-                        launchSingleTop = true
-                    }
-                }
+        if (status == UsbSerialManager.Status.CONNECTED && currentRoute == Routes.CONNECT) {
+            nav.navigate(Routes.HOME) {
+                popUpTo(Routes.CONNECT) { inclusive = true }
+                launchSingleTop = true
             }
-            UsbSerialManager.Status.DISCONNECTED -> {
-                // Don't yank the user off the flasher: it intentionally runs while the
-                // normal serial session is down (it holds the port itself).
-                if (currentRoute != null && currentRoute != Routes.CONNECT && currentRoute != Routes.FLASH) {
-                    nav.navigate(Routes.CONNECT) {
-                        popUpTo(0) { inclusive = true }
-                        launchSingleTop = true
-                    }
-                }
-            }
-            else -> {}
         }
     }
 }

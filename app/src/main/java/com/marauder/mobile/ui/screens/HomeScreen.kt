@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -112,6 +113,7 @@ fun HomeScreen(
     onOpenPosture: () -> Unit,
     onOpenScenarios: () -> Unit,
     onDisconnect: () -> Unit,
+    onOpenConnect: () -> Unit,
 ) {
     val connStatus by vm.status.collectAsState()
     val name by vm.connectedName.collectAsState()
@@ -123,6 +125,10 @@ fun HomeScreen(
     val mission by vm.activeMission.collectAsState()
     val darkTheme by vm.darkTheme.collectAsState()
     val connected = connStatus == UsbSerialManager.Status.CONNECTED
+
+    // One short tag, not a paragraph: what cannot run without the board says so in three words and
+    // the person decides, instead of tapping into a screen that then tells them.
+    val boardTag = if (connected) "" else " · needs the board"
 
     // Category cards come from the same catalog the Advanced tree renders, so command
     // wiring, capability gating and tiers keep a single source of truth.
@@ -180,6 +186,21 @@ fun HomeScreen(
                 )
             }
 
+            // The way to the link, from the screen the app opens on. Without this the only route to
+            // the connect flow was being thrown at it by the gate, which reads as a malfunction: the
+            // user taps something and lands somewhere else with no explanation.
+            if (!connected) {
+                item {
+                    BigAction(
+                        label = "Connect a board",
+                        hint = "pick the port; the app asks who it is",
+                        icon = Icons.Filled.Usb,
+                        tint = MarauderCyan,
+                        onClick = onOpenConnect,
+                    )
+                }
+            }
+
             mission?.let { m ->
                 item {
                     MissionCard(
@@ -193,37 +214,37 @@ fun HomeScreen(
             item { SectionLabel("Get things done", modifier = Modifier.padding(top = 6.dp)) }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // What works without a board comes first: without a cable this is the whole app,
+                    // and burying it fourth under things that cannot run made Home a wall of five
+                    // identical cards with no path through it.
+                    BigAction(
+                        label = "Capture library",
+                        hint = "what this phone already saved",
+                        icon = Icons.Filled.Folder,
+                        tint = CatSniffer,
+                        onClick = onOpenArtifacts,
+                    )
                     BigAction(
                         label = "Playbooks",
-                        hint = "guided jobs: capture · crack · wardrive · portal, one step at a time",
+                        hint = "guided jobs, one step at a time" + boardTag,
                         icon = Icons.Filled.AutoStories,
                         tint = MarauderCyan,
                         onClick = onOpenScenarios,
                     )
                     BigAction(
                         label = "Scan networks",
-                        hint = "scanall · list every access point, then pick a target",
+                        // One card for one screen: there used to be a second card here promising
+                        // "capture handshake / PMKID" that opened this same screen, and two promises
+                        // of the same thing read as two different things. The guided version of that
+                        // job is a playbook, and it is listed there.
+                        hint = "scan, then pick a network to capture from" + boardTag,
                         icon = Icons.Filled.PermScanWifi,
                         tint = CatWifi,
                         onClick = onOpenScan,
                     )
                     BigAction(
-                        label = "Capture handshake / PMKID",
-                        hint = "sniffpmkid · open Scan to choose the network",
-                        icon = Icons.Filled.Key,
-                        tint = MarauderCyan,
-                        onClick = onOpenScan,
-                    )
-                    BigAction(
-                        label = "Capture library",
-                        hint = "pcap · GPX · logs the app has already saved on this phone",
-                        icon = Icons.Filled.Folder,
-                        tint = CatSniffer,
-                        onClick = onOpenArtifacts,
-                    )
-                    BigAction(
                         label = "Network posture",
-                        hint = "join a network with the board · find its hosts · check open ports",
+                        hint = "join a network, find its hosts" + boardTag,
                         icon = Icons.Filled.Language,
                         tint = CatScanner,
                         onClick = onOpenPosture,
@@ -231,16 +252,21 @@ fun HomeScreen(
                 }
             }
 
-            item { SectionLabel("Board", modifier = Modifier.padding(top = 6.dp)) }
-            item {
-                BoardCard(
-                    info = info,
-                    silent = boardSilence,
-                    channel = boardChannel,
-                    chanHop = boardHop,
-                    onOpenFlash = onOpenFlash,
-                    onReboot = { vm.runCommand("reboot") },
-                )
+            // A board that is not connected has nothing to report. The card used to spend three lines
+            // on it - "Reading board…", "waiting for jsoninfo", an em-dash - which claimed a board
+            // state the app cannot prove and, worse, implied a read that would never finish.
+            if (connected) {
+                item { SectionLabel("Board", modifier = Modifier.padding(top = 6.dp)) }
+                item {
+                    BoardCard(
+                        info = info,
+                        silent = boardSilence,
+                        channel = boardChannel,
+                        chanHop = boardHop,
+                        onOpenFlash = onOpenFlash,
+                        onReboot = { vm.runCommand("reboot") },
+                    )
+                }
             }
 
             item { SectionLabel("Toolbox", modifier = Modifier.padding(top = 6.dp)) }

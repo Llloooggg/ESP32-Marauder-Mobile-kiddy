@@ -109,7 +109,9 @@ fun ArtifactsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Artifacts · ${items.size}") },
+                // The name has to match what the entry point on Home is called, or the person looks
+                // for a thing the screen never claims to be.
+                title = { Text("Capture library · ${items.size}") },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
                 },
@@ -183,7 +185,12 @@ private fun ArtifactRow(artifact: Artifact, onClick: () -> Unit) {
                 )
                 Spacer(Modifier.size(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    HashStateChip(record)
+                    if (record.kind.equals("pcap", ignoreCase = true)) {
+                        // Only a capture can be left un-analysed. A session log or a journal is not
+                        // something hashes come out of, and a chip saying "NOT ANALYSED" on it reads
+                        // as work left undone when there is none to do.
+                        HashStateChip(record)
+                    }
                     record.meta["eapolFrames"]?.let { StatChip("EAPOL", it, Success) }
                     // EAPOL that only the access point transmitted — the client never answered, so there
                     // is no handshake and no wordlist can produce one. That belongs on the row.
