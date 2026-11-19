@@ -519,6 +519,9 @@ object Catalog {
                 listOf(
                     MenuItem("Hunt An AP", "foxhunt -w <AP slot> · pick a row in the AP list", Icons.Filled.SettingsInputAntenna, Accent.SNIFFER,
                         MenuAction.OpenList(ListType.ACCESS_POINTS), requiresCaps = setOf("foxhunt")),
+                    MenuItem("Hunt A Client Of An AP", "foxhunt -s <AP slot> <client slot>", Icons.Filled.Devices, Accent.SNIFFER,
+                        MenuAction.Arg("${FirmwareCommands.FOXHUNT} -s", "AP slot, then that AP's client slot (both are rows of the lists)", "0 0"),
+                        requiresCaps = setOf("foxhunt")),
                     MenuItem("Hunt A BLE Device", "foxhunt -b <BLE index>", Icons.AutoMirrored.Filled.BluetoothSearching, Accent.BLUETOOTH,
                         MenuAction.Arg("${FirmwareCommands.FOXHUNT} -b", "index from `list -b`", "0"), requiresCaps = setOf("foxhunt")),
                     MenuItem("Hunt A FindMy Tag", "foxhunt -t <BLE index>", Icons.Filled.Luggage, Accent.BLUETOOTH,
@@ -554,8 +557,10 @@ object Catalog {
                     MenuItem("Board GPS Tracker", "gps -t (stop with Stop)", Icons.Filled.Route, Accent.GPS,
                         MenuAction.Send(FirmwareCommands.gpsTracker()), requiresCaps = setOf("gps")),
                     MenuItem("GPS POI", "Mark points of interest", Icons.Filled.PushPin, Accent.GPS, MenuAction.Submenu("gps_poi")),
-                    MenuItem("Tag POI While Wardriving", "wardrivepoi [label]", Icons.Filled.PushPin, Accent.GPS,
+                    MenuItem("Tag POI While Wardriving", "wardrivepoi <label> · only while a wardrive runs", Icons.Filled.PushPin, Accent.GPS,
                         MenuAction.Arg(FirmwareCommands.WARDRIVE_POI, "optional label for the point", "campus")),
+                    MenuItem("Tag Unnamed POI", "wardrivepoi · only while a wardrive runs", Icons.Filled.PushPin, Accent.GPS,
+                        MenuAction.Send(FirmwareCommands.WARDRIVE_POI)),
                     MenuItem("Geofences", "Configured fences", Icons.Filled.MyLocation, Accent.GPS, MenuAction.OpenList(ListType.GEOFENCES)),
                     MenuItem("Geofence List", "geofence list", Icons.AutoMirrored.Filled.FormatListBulleted, Accent.GPS,
                         MenuAction.Send(FirmwareCommands.geofenceList())),
@@ -573,6 +578,10 @@ object Catalog {
                     MenuItem("GPS Constellations", "gps -n <system>", Icons.Filled.GpsFixed, Accent.GPS,
                         MenuAction.Arg("${FirmwareCommands.GPS} -n", "native | all | gps | glonass | galileo | navic | qzss | beidou", "all"),
                         requiresCaps = setOf("gps")),
+                    MenuItem("BeiDou BD Mode", "gps -n beidou -b · BD instead of GB", Icons.Filled.GpsFixed, Accent.GPS,
+                        MenuAction.Send(FirmwareCommands.gpsBeidouBd()), requiresCaps = setOf("gps")),
+                    MenuItem("NMEA Sentences", "gps -g nmea · which sentences to print", Icons.Filled.Satellite, Accent.GPS,
+                        MenuAction.Submenu("gps_nmea"), requiresCaps = setOf("gps")),
                 ),
             ),
         )
@@ -583,6 +592,21 @@ object Catalog {
                     MenuItem("Start POI", "gpspoi -s", Icons.Filled.PlayArrow, Accent.GPS, MenuAction.Send("gpspoi -s")),
                     MenuItem("Mark POI", "gpspoi -m", Icons.Filled.PushPin, Accent.GPS, MenuAction.Send("gpspoi -m")),
                     MenuItem("End POI", "gpspoi -e", Icons.Filled.Stop, Accent.GPS, MenuAction.Send("gpspoi -e")),
+                ),
+            ),
+        )
+        add(
+            MenuScreen(
+                "gps_nmea", "NMEA Sentences",
+                listOf(
+                    MenuItem("Default (GGA + RMC)", "gps -g nmea · the pair the board builds", Icons.Filled.Satellite, Accent.GPS,
+                        MenuAction.Send(FirmwareCommands.gpsNmea())),
+                    MenuItem("Received", "gps -g nmea -r · everything the module sent", Icons.Filled.Satellite, Accent.GPS,
+                        MenuAction.Send(FirmwareCommands.gpsNmea("r"))),
+                    MenuItem("Not Implemented", "gps -g nmea -i · no handler in the library", Icons.Filled.Info, Accent.GPS,
+                        MenuAction.Send(FirmwareCommands.gpsNmea("i"))),
+                    MenuItem("Not Parsed", "gps -g nmea -p · the board could not parse it", Icons.Filled.Warning, Accent.GPS,
+                        MenuAction.Send(FirmwareCommands.gpsNmea("p"))),
                 ),
             ),
         )

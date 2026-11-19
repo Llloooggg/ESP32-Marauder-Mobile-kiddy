@@ -165,4 +165,96 @@ class FirmwareCoverageTest {
         assertEquals("randapmac", FirmwareCommands.randomiseApMac())
         assertEquals("randstamac", FirmwareCommands.randomiseStationMac())
     }
+
+    // --- depth inside a verb, where the census cannot see a gap --------------------------
+
+    /**
+     * The census counts verbs, so it cannot notice a mode the app never offers. Fox Hunt has
+     * seven mutually exclusive flags and each one is a different hunt; `-s` also checks that
+     * the station belongs to the AP before starting, so its two slots are both real inputs.
+     */
+    @Test
+    fun everyFoxhuntModeHasItsOwnEntryPoint() {
+        val offered = allItems.mapNotNull { item ->
+            when (val a = item.action) {
+                is MenuAction.Send -> a.command
+                is MenuAction.Arg -> a.base
+                else -> null
+            }
+        }.filter { it.startsWith("${FirmwareCommands.FOXHUNT} ") }
+
+        // -w opens the AP list instead of asking for a slot; the rest are sent or prompted.
+        for (flag in listOf("-s", "-b", "-t", "-f", "-p", "-m")) {
+            assertTrue(
+                "foxhunt $flag has no entry point (offered: $offered)",
+                offered.any { it.split(" ").contains(flag) },
+            )
+        }
+        assertTrue(
+            "the AP hunt must open the firmware's own AP list, not ask for a remembered slot",
+            allItems.any { item ->
+                val a = item.action
+                a is MenuAction.OpenList && a.type == ListType.ACCESS_POINTS &&
+                    item.requiresCaps.contains("foxhunt")
+            },
+        )
+        assertEquals("foxhunt -s 3 7", FirmwareCommands.foxhuntStation(3, 7))
+    }
+
+    /**
+     * `gps -b` is not a command: the parser only looks for it inside the `-n beidou`
+     * branch, where it selects BD over GB. The builder has to keep that shape, and the
+     * NMEA filters are the three readings of `-g nmea` the firmware distinguishes.
+     */
+    @Test
+    fun gpsModifiersKeepTheBranchTheParserReadsThemIn() {
+        assertEquals("gps -n beidou", FirmwareCommands.gpsSetSystems("beidou"))
+        assertEquals("gps -n beidou -b", FirmwareCommands.gpsBeidouBd())
+        assertEquals("gps -g nmea", FirmwareCommands.gpsNmea())
+        assertEquals("gps -g nmea -r", FirmwareCommands.gpsNmea("r"))
+        assertEquals("gps -g nmea -i", FirmwareCommands.gpsNmea("i"))
+        assertEquals("gps -g nmea -p", FirmwareCommands.gpsNmea("p"))
+
+        val offered = allItems.mapNotNull { item ->
+            when (val a = item.action) {
+                is MenuAction.Send -> a.command
+                is MenuAction.Arg -> a.base
+                else -> null
+            }
+        }.filter { it.startsWith("${FirmwareCommands.GPS} ") }
+        assertTrue("bare `gps -b` reaches no parser branch", offered.none { it.trim() == "gps -b" })
+    }
+
+    /**
+     * What `help` prints is not what the parser reads. `update -w` is advertised and never
+     * dispatched, so no catalog entry may build it — and the syntax note still has to match
+     * the firmware's own line, because that is what the board tells a person in the console.
+     */
+    @Test
+    fun documentedArgumentsTheFirmwareNeverAnswersAreNotBuilt() {
+        val built = allItems.mapNotNull { item ->
+            when (val a = item.action) {
+                is MenuAction.Send -> a.command
+                is MenuAction.Arg -> a.base
+                else -> null
+            }
+        } + FirmwareCommands.dynamic.values
+
+        for ((arg, why) in FirmwareCommands.documentedButUnanswered) {
+            assertTrue("$arg needs a stated reason", why.isNotBlank())
+            assertEquals(
+                "$arg is printed by help but read by no parser branch; nothing may send it",
+                emptyList<String>(),
+                built.filter { it == arg || it.startsWith("$arg ") },
+            )
+            assertTrue(
+                "$arg must still name a verb in the census",
+                arg.substringBefore(' ') in FirmwareCommands.verbs,
+            )
+        }
+        assertTrue(
+            "the update note must keep the firmware's own -s/-w spelling",
+            FirmwareCommands.cli.first { it.name == FirmwareCommands.UPDATE }.syntax.contains("-w"),
+        )
+    }
 }

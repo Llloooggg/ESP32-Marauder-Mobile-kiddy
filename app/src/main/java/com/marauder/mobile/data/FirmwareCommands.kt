@@ -47,7 +47,7 @@ object FirmwareCommands {
             "/-f <flipper>/-p <pineapple>/-m <multissid>"),
         FirmwareVerb(GEOFENCE, "geofence list/set <1-5> <lat> <lon> <0.1-1.0 mi> \"<name>\"/clear <1-5>"),
         FirmwareVerb(GPS, "gps [-t] [-g] <fix/sat/lon/lat/alt/date/accuracy/text/nmea>" +
-            " [-n] <native/all/gps/glonass/galileo/navic/qzss/beidou>"),
+            " [-n] <native/all/gps/glonass/galileo/navic/qzss/beidou> [-b = BeiDou BD]"),
         FirmwareVerb(GPS_DATA, "gpsdata"),
         FirmwareVerb(GPS_POI, "gpspoi -s/-m/-e"),
         FirmwareVerb(HELP, "help"),
@@ -88,7 +88,7 @@ object FirmwareCommands {
         FirmwareVerb(SPOOF_AT, "spoofat -t <index>"),
         FirmwareVerb(SSID, "ssid -a -g <count>/-a -n <name>/-r <index>"),
         FirmwareVerb(STOPSCAN, "stopscan [-f]"),
-        FirmwareVerb(UPDATE, "update -s"),
+        FirmwareVerb(UPDATE, "update -s/-w"),
         FirmwareVerb(UPLOAD, "upload -d <wdg/wigle/both>"),
         FirmwareVerb(WARDRIVE, "wardrive"),
         FirmwareVerb(WARDRIVE_POI, "wardrivepoi [label]"),
@@ -128,6 +128,21 @@ object FirmwareCommands {
     val appOnly: Map<String, String> = linkedMapOf(
         GPS_TRACKER to "the phone's own GPS writes the GPX track; the board has no `gpstracker` " +
             "dispatch, and its own tracker is `gps -t`",
+    )
+
+    /**
+     * Arguments the firmware's `help` advertises but its parser never reads. They are not
+     * verbs — the verb itself is reachable — so [neverSend] cannot hold them. Listing them
+     * here keeps two things true: the app never builds one, and a firmware update that
+     * starts answering it has to face a test instead of silently changing meaning.
+     *
+     * `update -w` is the only one today: `CommandLine.cpp` searches for `-s` and nothing
+     * else, so `update -w` falls through every branch and the board does nothing at all.
+     * (No `-w` is printed in the firmware's dispatch chain; the help string at
+     * `CommandLine.h:150` is the only place it exists.)
+     */
+    val documentedButUnanswered: Map<String, String> = linkedMapOf(
+        "$UPDATE -w" to "help prints it, but CommandLine.cpp only searches for -s: no branch reads -w",
     )
 
     // --- verb prefixes -----------------------------------------------------------------
@@ -407,6 +422,20 @@ object FirmwareCommands {
     /** `gps [-g <what>]` / `gps -n <system>` — needs a board with a GPS module (`gps` cap). */
     fun gpsGet(what: String): String = "$GPS -g $what"
     fun gpsSetSystems(system: String): String = "$GPS -n $system"
+
+    /**
+     * `gps -n beidou -b`: the parser reads `-b` only inside the `-n beidou` branch, and
+     * `-b` picks BD over GB. Bare `gps -b` is not a command — it reaches no branch at all.
+     */
+    fun gpsBeidouBd(): String = "$GPS -n beidou -b"
+
+    /**
+     * `gps -g nmea [-r|-i|-p]`: which of the module's sentences to print. No flag prints
+     * the generated GGA + RMC pair; `-r` everything received, `-i` sentences the library
+     * has no handler for, `-p` sentences the board could not parse.
+     */
+    fun gpsNmea(filter: String? = null): String =
+        if (filter.isNullOrBlank()) "$GPS -g nmea" else "$GPS -g nmea -$filter"
 
     /**
      * `gps -t` — the board's own GPS tracker, which is what the firmware's `gpstracker` help line
