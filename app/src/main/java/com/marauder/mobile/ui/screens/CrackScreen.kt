@@ -355,7 +355,7 @@ fun CrackScreen(
 
             item {
                 Text(
-                    "Cracking here means testing candidate passwords against the hashes you captured. Only do that for networks you own or have written permission to audit.",
+                    "Only crack networks you own or have written permission to audit.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MarauderTextDim,
                 )

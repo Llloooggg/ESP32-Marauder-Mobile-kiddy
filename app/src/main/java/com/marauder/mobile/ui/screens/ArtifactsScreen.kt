@@ -52,9 +52,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.marauder.mobile.data.Artifact
 import com.marauder.mobile.data.ArtifactRecord
+import com.marauder.mobile.data.ArtifactGroups
 import com.marauder.mobile.data.CaptureDiagnosis
 import com.marauder.mobile.ui.shareFile
 import com.marauder.mobile.ui.components.EmptyState
+import com.marauder.mobile.ui.components.SectionLabel
 import com.marauder.mobile.ui.components.StatChip
 import com.marauder.mobile.ui.theme.CatGps
 import com.marauder.mobile.ui.theme.Danger
@@ -146,8 +148,16 @@ fun ArtifactsScreen(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    items(items, key = { it.record.name }) { artifact ->
-                        ArtifactRow(artifact) { onOpenArtifact(artifact.record.name) }
+                    // Grouped, not filtered: a capture and a session journal are found for different
+                    // reasons, and one list of both makes the thing a person came for hard to reach.
+                    // Nothing is dropped - the app's own records stay findable.
+                    ArtifactGroups.ordered(items).forEach { (group, members) ->
+                        item(key = "group-${group.name}") {
+                            SectionLabel(ArtifactGroups.label(group, members.size))
+                        }
+                        items(members, key = { it.record.name }) { artifact ->
+                            ArtifactRow(artifact) { onOpenArtifact(artifact.record.name) }
+                        }
                     }
                 }
             }
