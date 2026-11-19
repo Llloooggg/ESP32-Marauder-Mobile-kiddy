@@ -10,6 +10,7 @@ import com.marauder.mobile.data.ArtifactRecord
 import com.marauder.mobile.data.ArtifactsRepository
 import com.marauder.mobile.data.BoardRadio
 import com.marauder.mobile.data.BoardSetting
+import com.marauder.mobile.data.CaptureDiagnosis
 import com.marauder.mobile.data.CaptureOps
 import com.marauder.mobile.data.GpxAssembler
 import com.marauder.mobile.data.DeviceInfoForJournal
@@ -1309,29 +1310,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         val live = synchronized(essidsSeen) { HashMap(essidsSeen) }
         viewModelScope.launch(Dispatchers.IO) {
             val r = runCatching { artifacts.analyze(name, live) }.getOrNull() ?: return@launch
-            _snackbar.tryEmit(explainExtraction(r))
-        }
-    }
-
-    /** One honest sentence about what extraction produced, with its counters. */
-    private fun explainExtraction(r: HashExtractResult): String {
-        val counts = buildString {
-            append("frames ${r.frames}, EAPOL ${r.eapolFrames} ")
-            append("(M1 ${r.m1}, M2 ${r.m2}, M3 ${r.m3}, M4 ${r.m4}")
-            if (r.apEmptyEapol > 0) append(", AP-empty ${r.apEmptyEapol}")
-            append(")")
-            // The case a wordlist can never fix: EAPOL was heard, but only from the AP side.
-            if (r.eapolOnlyFromAp) {
-                append(" — every EAPOL came from the AP")
-                if (r.eapolRetried > 0) append(" (${r.eapolRetried} of them retransmitted)")
-                append(", not one from the client")
-            }
-            if (r.badRecords > 0) append(", ${r.badRecords} record(s) lost in transit (+${r.lostBytes} B)")
-        }
-        return if (r.usable) {
-            "Capture holds ${r.pmkidCount} PMKID, ${r.handshakeSets} handshake(s) — ready to crack [$counts]"
-        } else {
-            "No crackable credential in this capture — ${r.note ?: "no PMKID or handshake"} [$counts]"
+            _snackbar.tryEmit(CaptureDiagnosis.explain(r))
         }
     }
 

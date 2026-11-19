@@ -78,6 +78,34 @@ object CaptureDiagnosis {
         val total = meta[META_EAPOL_TOTAL]?.toIntOrNull() ?: return false
         return eapolOnlyFromAp(total, meta[META_EAPOL_FROM_CLIENT]?.toIntOrNull())
     }
+
+    /**
+     * One honest sentence about what extraction produced, with the counters behind the number. It
+     * lives beside the rules above because it is where the app states its conclusion: a capture that
+     * yielded nothing has to be told apart — no EAPOL at all, EAPOL from one side only, frames lost
+     * in transit, a network whose key is not password-derived — and the sentence must not leave the
+     * reader reaching for a bigger wordlist when the missing thing is a client frame.
+     */
+    fun explain(r: HashExtractResult): String {
+        val counts = buildString {
+            append("frames ${r.frames}, EAPOL ${r.eapolFrames} ")
+            append("(M1 ${r.m1}, M2 ${r.m2}, M3 ${r.m3}, M4 ${r.m4}")
+            if (r.apEmptyEapol > 0) append(", AP-empty ${r.apEmptyEapol}")
+            append(")")
+            // The case a wordlist can never fix: EAPOL was heard, but only from the AP side.
+            if (r.eapolOnlyFromAp) {
+                append(" — every EAPOL came from the AP")
+                if (r.eapolRetried > 0) append(" (${r.eapolRetried} of them retransmitted)")
+                append(", not one from the client")
+            }
+            if (r.badRecords > 0) append(", ${r.badRecords} record(s) lost in transit (+${r.lostBytes} B)")
+        }
+        return if (r.usable) {
+            "Capture holds ${r.pmkidCount} PMKID, ${r.handshakeSets} handshake(s) — ready to crack [$counts]"
+        } else {
+            "No crackable credential in this capture — ${r.note ?: "no PMKID or handshake"} [$counts]"
+        }
+    }
 }
 
 /**

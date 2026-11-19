@@ -55,4 +55,53 @@ class CaptureDiagnosisTest {
         )
         assertTrue(CaptureDiagnosis.eapolOnlyFromAp(meta))
     }
+
+    // The sentence the app states as its conclusion. It is pinned because it is the product's
+    // honesty interface: a capture that produced nothing has to be told apart, and the wording must
+    // not leave the reader reaching for a bigger wordlist when what is missing is a client frame.
+
+    @Test
+    fun aCrackableCaptureSaysSoWithItsCounts() {
+        val r = HashExtractResult(pmkidCount = 1, handshakeSets = 0, hashLines = listOf("WPA*01*aa"))
+        val line = CaptureDiagnosis.explain(r)
+        assertTrue(line, line.contains("ready to crack"))
+        assertTrue(line, line.contains("1 PMKID"))
+    }
+
+    @Test
+    fun anEmptyCaptureNamesWhatIsMissingRatherThanBlame() {
+        val r = HashExtractResult(0, 0, emptyList(), frames = 1295, eapolFrames = 0)
+        val line = CaptureDiagnosis.explain(r)
+        assertTrue(line, line.contains("No crackable credential"))
+        assertTrue(line, line.contains("no PMKID or handshake"))
+        assertTrue(line, line.contains("frames 1295"))
+        assertTrue("no EAPOL at all is not client silence: $line", !line.contains("not one from the client"))
+    }
+
+    @Test
+    fun theApOnlyFieldShapeIsNamedInTheSentence() {
+        // 358 KB, 1295 records, 246 EAPOL, one sender, 233 retransmissions: the real field capture.
+        val r = HashExtractResult(
+            0, 0, emptyList(),
+            frames = 1295, eapolFrames = 246,
+            eapolFromAp = 246, eapolFromClient = 0, eapolRetried = 233, apEmptyEapol = 246,
+        )
+        val line = CaptureDiagnosis.explain(r)
+        assertTrue(line, line.contains("every EAPOL came from the AP"))
+        assertTrue(line, line.contains("233 of them retransmitted"))
+        assertTrue(line, line.contains("not one from the client"))
+        assertTrue(line, line.contains("AP-empty 246"))
+    }
+
+    @Test
+    fun lossInTransitIsPartOfTheSentenceAndClientSilenceIsNot() {
+        val r = HashExtractResult(
+            0, 0, emptyList(),
+            frames = 100, eapolFrames = 4, eapolFromAp = 1, eapolFromClient = 3,
+            badRecords = 3, lostBytes = 120,
+        )
+        val line = CaptureDiagnosis.explain(r)
+        assertTrue(line, line.contains("3 record(s) lost in transit (+120 B)"))
+        assertTrue("a client did answer here: $line", !line.contains("not one from the client"))
+    }
 }
