@@ -26,6 +26,20 @@ data class ArtifactRecord(
         const val HASH_NONE = "none"
         const val HASH_DONE = "done"
         const val HASH_FAIL = "fail"
+
+        /**
+         * Meta keys holding the SSIDs the app saw for this capture's BSSIDs
+         * (`ssid.<bssid>` → ESSID). The SSID is the PBKDF2 salt, so a capture
+         * that never caught a beacon can still be cracked when the scan list
+         * supplies it — this is what makes the record self-contained.
+         */
+        const val SSID_META = "ssid."
+
+        /** bssid → SSID pairs stored in a record's meta. */
+        fun knownEssids(meta: Map<String, String>): Map<String, String> =
+            meta.filterKeys { it.startsWith(SSID_META) }
+                .mapKeys { (k, _) -> k.removePrefix(SSID_META).lowercase() }
+                .filterValues { it.isNotBlank() }
     }
 }
 
@@ -155,35 +169,45 @@ class ArtifactsRepository(context: Context) {
     /**
      * Turn one capture into crack-ready hashes and remember the result on the
      * artifact (state + counts + a sidecar `.22000.txt`). Returns null when the
-     * extractor is not wired or the capture holds nothing usable.
+     * extractor is not wired. [knownEssids] (bssid → SSID from the app's scan
+     * list) is the fallback salt source for captures that never caught a beacon:
+     * without an SSID no cracker can work, so passing it rescues otherwise
+     * unusable handshakes.
      */
-    fun analyze(name: String): HashExtractResult? {
+    fun analyze(name: String, knownEssids: Map<String, String> = emptyMap()): HashExtractResult? {
         val artifact = store.get(name) ?: return null
-        val result = bridge.extract(artifact.file)
+        val salts = ArtifactRecord.knownEssids(artifact.record.meta) + knownEssids
+        val result = bridge.extract(artifact.file, salts)
         if (result == null) {
             store.setHashResult(name, ArtifactRecord.HASH_FAIL, "extractor unavailable")
             return null
         }
+        val diagnostics = mapOf(
+            "pmkid" to result.pmkidCount.toString(),
+            "handshakes" to result.handshakeSets.toString(),
+            "hashLines" to result.hashLines.size.toString(),
+            // Why a "0 handshakes" result happened, in the raw counts the UI shows.
+            "frames" to result.frames.toString(),
+            "eapol" to result.eapolFrames.toString(),
+            "beacons" to result.beacons.toString(),
+            "m1" to result.m1.toString(),
+            "m2" to result.m2.toString(),
+            "m3" to result.m3.toString(),
+            "m4" to result.m4.toString(),
+            "badRecords" to result.badRecords.toString(),
+            "lostBytes" to result.lostBytes.toString(),
+        )
         if (!result.usable) {
             store.setHashResult(
                 name,
                 ArtifactRecord.HASH_FAIL,
                 result.note ?: "no PMKID or handshake in this capture",
-                mapOf("pmkid" to "0", "handshakes" to "0"),
+                diagnostics,
             )
             return result
         }
         runCatching { store.hashFileFor(name).writeText(result.hashLines.joinToString("\n")) }
-        store.setHashResult(
-            name,
-            ArtifactRecord.HASH_DONE,
-            result.note ?: "",
-            mapOf(
-                "pmkid" to result.pmkidCount.toString(),
-                "handshakes" to result.handshakeSets.toString(),
-                "hashLines" to result.hashLines.size.toString(),
-            ),
-        )
+        store.setHashResult(name, ArtifactRecord.HASH_DONE, result.note ?: "", diagnostics)
         return result
     }
 

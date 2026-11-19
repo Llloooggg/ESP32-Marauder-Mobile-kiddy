@@ -70,7 +70,7 @@ class JvmCrackEngine : CrackEngine {
 
         val cracked = HashSet<Int>()
         var done = 0L
-        var windowStart = System.nanoTime()
+        val meter = RateMeter()
         var stopped = false
 
         outer@ for (list in lists) {
@@ -97,19 +97,17 @@ class JvmCrackEngine : CrackEngine {
                     }
 
                     done++
-                    val now = System.nanoTime()
-                    if (now - windowStart >= 1_000_000_000L) {
-                        emit(CrackEvent.Progress(done, totalWords, done * 1_000_000_000.0 / (now - windowStart)))
-                        windowStart = now
-                    }
+                    val tick = meter.sample(1)
+                    if (tick.newWindow) emit(CrackEvent.Progress(done, totalWords, tick.rate))
                     if (cracked.size == parsed.size) break // every target recovered
                 }
             }
             if (stopped || cracked.size == parsed.size) break
         }
 
-        val finalRate = done * 1_000_000_000.0 / (System.nanoTime() - windowStart).coerceAtLeast(1L)
-        emit(CrackEvent.Progress(done, totalWords, finalRate))
+        // The run's average is steadier than the last window, and an ETA needs a
+        // rate that does not jump every time the phone throttles.
+        emit(CrackEvent.Progress(done, totalWords, meter.overall()))
         emit(CrackEvent.Finished(completed = !stopped))
     }.flowOn(Dispatchers.Default)
 

@@ -56,6 +56,9 @@ class ExtractorTest {
             out.write(payload, 0, end)
         }
 
+        /** Raw bytes written with no record header: models a block lost in transit. */
+        fun raw(bytes: ByteArray) { out.write(bytes) }
+
         fun bytes(): ByteArray = out.toByteArray()
     }
 
@@ -183,7 +186,8 @@ class ExtractorTest {
         pcap.frame(dataEapol(pmkidM1(officialPmkid), fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true))
         val rep = run(pcap.bytes())
         assertEquals(0, rep.hashes.size)
-        assertTrue(rep.notes.any { it.contains("no beacon seen") })
+        assertEquals(1, rep.pairsNoSsid)
+        assertTrue(rep.notes.any { it.contains("SSID is unknown") })
     }
 
     // ---- M1 + M2 handshake ---------------------------------------------------------
@@ -219,10 +223,10 @@ class ExtractorTest {
         assertEquals("hashcat-essid", h.essid)
         assertEquals("fc:69:0c:15:82:64", h.bssid)
         assertEquals("f4:74:7f:87:f9:f4", h.sta)
-        assertEquals(2, h.messagePair)
+        assertEquals(0, h.messagePair)   // hcxtools MESSAGE_PAIR_M12E2
         assertEquals(2, h.keyver) // key_info version bits in M2 (WPA2-AES → CMAC)
 
-        // The line must carry: mic, aa, spa, essid, anonce, full M2 frame, mp=02
+        // The line must carry: mic, aa, spa, essid, anonce, full M2 frame, mp=00
         val parts = h.line.split("*")
         assertEquals("WPA", parts[0])
         assertEquals("02", parts[1])
@@ -234,7 +238,7 @@ class ExtractorTest {
         // hcxtools convention: Key MIC field zeroed inside the stored eapol
         val m2Zeroed = m2.copyOf().also { java.util.Arrays.fill(it, 81, 97, 0) }
         assertEquals(hexOf(m2Zeroed), parts[7])
-        assertEquals("02", parts[8])
+        assertEquals("00", parts[8])
         // hashcat requires a full 64-hex anonce and an eapol of at least 99 bytes
         assertEquals(64, parts[6].length)
         assertTrue(parts[7].length >= 99 * 2)
@@ -249,7 +253,137 @@ class ExtractorTest {
         pcap.frame(dataEapol(m2, fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true))
         val rep = run(pcap.bytes())
         assertEquals(0, rep.hashes.size)
-        assertTrue(rep.notes.any { it.contains("without its M1") })
+        assertEquals(1, rep.pairsNoApMessage)
+        assertTrue(rep.notes.any { it.contains("no matching AP message") })
+    }
+
+    // --- the M1/M3/M4 identification trap --------------------------------------
+    //
+    // M1 and M4 share the same key-info bits (Ack set, MIC clear). Taking an M4
+    // for an M1 was the classic way to end up with a capture of 100+ EAPOL frames
+    // that yields nothing crackable: the "ANonce" is a field of zeros.
+
+    /** M4: Ack set, MIC clear, no nonce and no key data (it is a bare ACK). */
+    private fun m4Frame(replay: Long): ByteArray =
+        eapolKey(keyInfo = 0x0082, replay = replay, nonce = ByteArray(32), body = ByteArray(0))
+
+    @Test
+    fun m4IsNeverUsedAsTheApMessage() {
+        val pcap = PcapBuilder()
+        pcap.frame(beacon(ssid))
+        // The ACK arrives first: an extractor that classifies by key-info bits alone
+        // would store its zero nonce and use it as the AP nonce.
+        pcap.frame(dataEapol(m4Frame(1), fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true))
+        pcap.frame(dataEapol(eapolKey(keyInfo = 0x0082, replay = 1, nonce = anonce, body = rsnIe()),
+            fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true))
+        val snonce = ByteArray(32) { (it + 7).toByte() }
+        val m2 = eapolKey(keyInfo = 0x0102, replay = 1, nonce = snonce, body = m2Body(), mic = ByteArray(16))
+        System.arraycopy(keyver2Mic(m2, "hashcat!", anonce, snonce), 0, m2, 81, 16)
+        pcap.frame(dataEapol(m2, fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true))
+
+        val rep = run(pcap.bytes())
+        assertEquals(1, rep.hashes.size)
+        assertEquals(1, rep.m1Frames)
+        assertEquals(1, rep.m4Frames)
+        val parts = rep.hashes[0].line.split("*")
+        assertEquals(hexOf(anonce), parts[6])            // the real ANonce, not zeros
+        assertEquals("00", parts[8])                     // M1+M2
+        assertTrue(CrackCore.parse(rep.hashes[0].line)!!.verify("hashcat!"))
+    }
+
+    @Test
+    fun m2WithOnlyAnM4ExplainsWhyNothingIsCrackable() {
+        val pcap = PcapBuilder()
+        pcap.frame(beacon(ssid))
+        pcap.frame(dataEapol(m4Frame(2), fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true))
+        pcap.frame(dataEapol(eapolKey(keyInfo = 0x0102, replay = 2, nonce = ByteArray(32), body = m2Body(),
+            mic = ByteArray(16)), fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true))
+
+        val rep = run(pcap.bytes())
+        assertEquals(0, rep.hashes.size)
+        assertEquals(1, rep.m4Frames)
+        assertTrue(rep.notes.any { it.contains("no matching AP message") })
+        assertTrue(rep.notes.any { it.contains("M4") })
+    }
+
+    /**
+     * When the AP's M1 never reached the capture but its M3 did, the ANonce is
+     * still there (M3 carries it) and the M2's MIC verifies against it —
+     * hcxtools' MESSAGE_PAIR_M32E2. This is what makes a lossy capture crackable.
+     */
+    @Test
+    fun m3RescuesTheHandshakeWhenTheM1WasMissed() {
+        val snonce = ByteArray(32) { (it + 3).toByte() }
+        val m2 = eapolKey(keyInfo = 0x0102, replay = 1, nonce = snonce, body = m2Body(), mic = ByteArray(16))
+        val mic = keyver2Mic(m2, "hashcat!", anonce, snonce)
+        System.arraycopy(mic, 0, m2, 81, 16)
+        // M3: Ack + MIC set, from the AP, carrying the same ANonce.
+        val m3 = eapolKey(keyInfo = 0x0182, replay = 2, nonce = anonce, body = rsnIe(), mic = ByteArray(16))
+
+        val pcap = PcapBuilder()
+        pcap.frame(beacon(ssid))
+        pcap.frame(dataEapol(m2, fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true))
+        pcap.frame(dataEapol(m3, fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true))
+
+        val rep = run(pcap.bytes())
+        assertEquals(1, rep.hashes.size)
+        assertEquals(0, rep.m1Frames)
+        assertEquals(1, rep.m3Frames)
+        val h = rep.hashes[0]
+        assertEquals(2, h.messagePair)                        // MESSAGE_PAIR_M32E2
+        assertEquals(hexOf(anonce), h.line.split("*")[6])     // ANonce taken from the M3
+        // Still the same credential: the cracker verifies the M2 MIC we stored.
+        assertTrue(CrackCore.parse(h.line)!!.verify("hashcat!"))
+    }
+
+    // --- ESSID fallback and stream damage ---------------------------------------
+
+    @Test
+    fun scanListSsidRescuesCredentialWithoutBeacon() {
+        val pcap = PcapBuilder()
+        pcap.frame(dataEapol(pmkidM1(officialPmkid), fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true))
+        val rep = Extractor.extract(ByteArrayInputStream(pcap.bytes()), mapOf("fc:69:0c:15:82:64" to "hashcat-essid"))
+
+        assertEquals(1, rep.hashes.size)
+        assertEquals(1, rep.ssidFromScan)
+        assertTrue(rep.hashes[0].line.contains(ssidHex))
+        assertTrue(rep.notes.any { it.contains("scan list") })
+    }
+
+    /**
+     * A chunk dropped in transit (the ring overflowing or the USB link losing a
+     * capstream block) desyncs the pcap record stream. Everything after the hole
+     * used to be lost; now the reader finds the next record the firmware could
+     * have written and keeps going.
+     */
+    @Test
+    fun resyncsAfterALostChunk() {
+        val junkBytes = 137
+        val pcap = PcapBuilder()
+        pcap.frame(beacon(ssid))
+        pcap.raw(ByteArray(junkBytes) { 0x41 })        // the hole a lost capstream block leaves
+        // The credential that arrived after the hole is the one that matters: without a
+        // resync the reader stops at the junk and never sees it.
+        pcap.frame(dataEapol(pmkidM1(officialPmkid), fcLo = 0x88, fcHi = 0x02,
+            addr1 = staMac, addr2 = apMac, withFcs = true))
+        val rep = run(pcap.bytes())
+
+        assertEquals(1, rep.hashes.size)                 // the post-gap credential survived
+        assertEquals(1, rep.badRecords)
+        assertTrue(rep.lostBytes >= junkBytes)
+        assertTrue(rep.resyncs >= 1)
+        assertTrue(rep.notes.any { it.contains("lost in transit") })
+    }
+
+    @Test
+    fun chipPaddingAfterTheEapolIsTolerated() {
+        val frame = dataEapol(pmkidM1(officialPmkid), fcLo = 0x88, fcHi = 0x02,
+            addr1 = staMac, addr2 = apMac, withFcs = false) + byteArrayOf(0, 0)
+        val pcap = PcapBuilder()
+        pcap.frame(beacon(ssid))
+        pcap.frame(frame)
+        val rep = run(pcap.bytes())
+        assertEquals(1, rep.hashes.size)
     }
 
     // ---- robustness -----------------------------------------------------------------

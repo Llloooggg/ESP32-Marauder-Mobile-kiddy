@@ -40,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -61,6 +62,7 @@ import com.marauder.mobile.ui.theme.MarauderTextDim
 import com.marauder.mobile.ui.theme.Success
 import com.marauder.mobile.ui.theme.Warning
 import com.marauder.mobile.vm.MarauderViewModel
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
@@ -76,6 +78,7 @@ fun ArtifactDetailScreen(
     onOpenCrack: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val ioScope = rememberCoroutineScope()
     var artifact by remember(artifactName) { mutableStateOf(vm.artifact(artifactName)) }
     var showDelete by remember { mutableStateOf(false) }
     var renameFrom by remember { mutableStateOf<String?>(null) }
@@ -167,6 +170,22 @@ fun ArtifactDetailScreen(
                 color = MarauderTextDim,
             )
 
+            if (record.hashState == ArtifactRecord.HASH_FAIL && record.note.isNotBlank()) {
+                SectionLabel("Why nothing is crackable")
+                Text(
+                    record.note,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Danger,
+                )
+                Text(
+                    "EAPOL frames on the board's console is not the same thing as a crackable credential: " +
+                        "the four-way handshake needs the AP's message (M1, or M3 as a fallback) AND the client's " +
+                        "M2, plus the network's SSID. The counts above say which of those the capture is missing.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MarauderTextDim,
+                )
+            }
+
             if (record.meta.isNotEmpty()) {
                 SectionLabel("Provenance")
                 Surface(
@@ -175,8 +194,9 @@ fun ArtifactDetailScreen(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        val essids = record.meta.keys.count { it.startsWith(ArtifactRecord.SSID_META) }
                         record.meta.toSortedMap().forEach { (key, value) ->
-                            if (key == "path") return@forEach
+                            if (key == "path" || key.startsWith(ArtifactRecord.SSID_META)) return@forEach
                             Row {
                                 Text(
                                     key,
@@ -189,6 +209,21 @@ fun ArtifactDetailScreen(
                                     style = MaterialTheme.typography.labelSmall,
                                     fontFamily = FontFamily.Monospace,
                                     color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                        }
+                        if (essids > 0) {
+                            Row {
+                                Text(
+                                    "ssids",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MarauderTextDim,
+                                    modifier = Modifier.padding(end = 8.dp),
+                                )
+                                Text(
+                                    "$essids kept from the scan list (used as the crack salt when the capture has no beacon)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MarauderTextDim,
                                 )
                             }
                         }
@@ -205,13 +240,15 @@ fun ArtifactDetailScreen(
                     modifier = Modifier.weight(1f),
                 ) {
                     analysing = true
-                    val result = vm.analyzeArtifact(artifactName)
-                    analysing = false
-                    reload()
-                    when {
-                        result == null -> vm.queueMessage("The hash extractor is not wired into this build yet")
-                        !result.usable -> vm.queueMessage(result.note ?: "No PMKID or WPA handshake in this capture")
-                        else -> vm.queueMessage("${result.hashLines.size} hash line(s) ready — PMKID ${result.pmkidCount}, handshakes ${result.handshakeSets}")
+                    ioScope.launch {
+                        val result = vm.analyzeArtifactSuspending(artifactName)
+                        analysing = false
+                        reload()
+                        when {
+                            result == null -> vm.queueMessage("The hash extractor is not wired into this build yet")
+                            !result.usable -> vm.queueMessage(result.note ?: "No PMKID or WPA handshake in this capture")
+                            else -> vm.queueMessage("${result.hashLines.size} hash line(s) ready — PMKID ${result.pmkidCount}, handshakes ${result.handshakeSets}")
+                        }
                     }
                 }
                 val canCrack = record.hashState == ArtifactRecord.HASH_DONE

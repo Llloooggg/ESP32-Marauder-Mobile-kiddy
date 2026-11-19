@@ -152,6 +152,46 @@ fun CrackScreen(
                 )
             }
 
+            if (state.inspections.isNotEmpty()) {
+                item { SectionLabel("Hash under test") }
+                state.inspections.forEach { insp ->
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                insp.label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (insp.crackable) MarauderCyan else Danger,
+                            )
+                            Text(
+                                buildString {
+                                    append("AP ${insp.ap} · client ${insp.sta}")
+                                    if (insp.eapolBytes > 0) append(" · EAPOL ${insp.eapolBytes} B")
+                                    if (insp.essidHex.isNotEmpty()) append(" · SSID bytes ${insp.essidHex}")
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MarauderTextDim,
+                            )
+                            insp.notes.forEach {
+                                Text(it, style = MaterialTheme.typography.labelSmall, color = MarauderTextDim)
+                            }
+                            insp.problems.forEach {
+                                Text("• $it", style = MaterialTheme.typography.bodySmall, color = Danger)
+                            }
+                        }
+                    }
+                }
+                if (state.inspections.none { it.crackable }) {
+                    item {
+                        Text(
+                            "None of these records can be recovered from this capture — re-extract it (Extract hashes) " +
+                                "after reconnecting the board, or capture again: the reasons are listed above.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Warning,
+                        )
+                    }
+                }
+            }
+
             item { SectionLabel("Backend") }
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -202,10 +242,16 @@ fun CrackScreen(
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 StatChip("TRIED", formatCount(state.doneGuesses), MarauderCyan)
-                                StatChip("RATE", "${formatCount(state.rate.roundToLong())} h/s", Success)
+                                StatChip(
+                                    "RATE",
+                                    if (state.rate > 0) "${formatCount(state.rate.roundToLong())} h/s" else "measuring…",
+                                    Success,
+                                )
                                 StatChip(
                                     "ETA",
-                                    if (state.rate > 0 && state.totalGuesses >= state.doneGuesses) {
+                                    // Only meaningful once a rate sample exists and there is
+                                    // actually something left: "0s" reads like a bug.
+                                    if (state.rate > 0 && state.totalGuesses > state.doneGuesses) {
                                         formatSeconds(((state.totalGuesses - state.doneGuesses) / state.rate).toLong())
                                     } else "—",
                                     MaterialTheme.colorScheme.onSurfaceVariant,

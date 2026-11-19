@@ -241,6 +241,9 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     private val ridBuf = ArrayList<DeviceMessage.Rid>()
     private val fenceBuf = ArrayList<DeviceMessage.Fence>()
 
+    /** bssid → ESSID as the scan list reported it (crack-salt fallback). */
+    private val essidsSeen = LinkedHashMap<String, String>()
+
     private var consoleSeq = 0L
     private var sessionJob: Job? = null
     private var liveJob: Job? = null
@@ -522,7 +525,12 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
                 bytes = summary?.bytes ?: 0L,
                 missedFrames = summary?.missedFrames ?: 0L,
             )
-            if (summary != null && summary.bytes > 0) artifactName = registerCapture(summary, m)
+            if (summary != null && summary.bytes > 0) {
+                artifactName = registerCapture(summary, m)
+                // Analyse it right away: the library then tells the user in the
+                // same breath whether the capture is crackable, and if not, why.
+                artifactName?.let { autoAnalyzeCapture(it) }
+            }
         }
         _activeMission.value = m.copy(
             done = true,
@@ -551,6 +559,12 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             if (m.eapolTotal > 0) meta["eapolFrames"] = m.eapolTotal.toString()
             if (m.ringDrops > 0) meta["ringDrops"] = m.ringDrops.toString()
         }
+        // The salt has to travel with the capture: a Marauder pcap often holds the
+        // handshake but no beacon (the ESP32 stays on the target channel), and
+        // without the SSID no cracker can derive the PMK.
+        synchronized(essidsSeen) {
+            essidsSeen.forEach { (bssid, essid) -> meta[ArtifactRecord.SSID_META + bssid] = essid }
+        }
         artifacts.store.upsert(
             ArtifactRecord(
                 name = name,
@@ -561,6 +575,51 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             ),
         )
         return name
+    }
+
+    /**
+     * Remembers which ESSID belongs to which BSSID, as the firmware's scan list
+     * reported it. Kept so captures that never caught a beacon can still be
+     * turned into crackable hashes (the SSID is the PBKDF2 salt).
+     */
+    private fun rememberEssids(aps: List<DeviceMessage.Ap>) {
+        synchronized(essidsSeen) {
+            for (ap in aps) {
+                if (ap.essid.isBlank() || ap.bssid.isBlank()) continue
+                essidsSeen[ap.bssid.lowercase()] = ap.essid
+            }
+            while (essidsSeen.size > MAX_ESSIDS_SEEN) {
+                essidsSeen.remove(essidsSeen.keys.first())
+            }
+        }
+    }
+
+    /**
+     * Extract hashes as soon as a capture closes, and say plainly what came out.
+     * "EAPOL frames on the console but 0 handshakes" is the confusing case, so
+     * the counters behind the number (which handshake messages arrived, how many
+     * records the link dropped) are part of the message.
+     */
+    private fun autoAnalyzeCapture(name: String) {
+        val live = synchronized(essidsSeen) { HashMap(essidsSeen) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val r = runCatching { artifacts.analyze(name, live) }.getOrNull() ?: return@launch
+            _snackbar.tryEmit(explainExtraction(r))
+        }
+    }
+
+    /** One honest sentence about what extraction produced, with its counters. */
+    private fun explainExtraction(r: HashExtractResult): String {
+        val counts = buildString {
+            append("frames ${r.frames}, EAPOL ${r.eapolFrames} ")
+            append("(M1 ${r.m1}, M2 ${r.m2}, M3 ${r.m3}, M4 ${r.m4})")
+            if (r.badRecords > 0) append(", ${r.badRecords} record(s) lost in transit (+${r.lostBytes} B)")
+        }
+        return if (r.usable) {
+            "Capture holds ${r.pmkidCount} PMKID, ${r.handshakeSets} handshake(s) — ready to crack [$counts]"
+        } else {
+            "No crackable credential in this capture — ${r.note ?: "no PMKID or handshake"} [$counts]"
+        }
     }
 
     /** Watch the firmware console for capture-success lines ("Received EAPOL:"). */
@@ -658,8 +717,17 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         artifacts.store.get(name)?.let { artifacts.store.upsert(it.record.copy(title = title)) }
     }
 
-    /** Extract hashcat-22000 hashes out of a capture (state is kept on the artifact). */
-    fun analyzeArtifact(name: String): HashExtractResult? = artifacts.analyze(name)
+    /**
+     * Extract hashcat-22000 hashes out of a capture (state is kept on the
+     * artifact). The live scan list is passed as the SSID fallback so a capture
+     * without a beacon can still be cracked.
+     */
+    fun analyzeArtifact(name: String): HashExtractResult? =
+        artifacts.analyze(name, synchronized(essidsSeen) { HashMap(essidsSeen) })
+
+    /** [analyzeArtifact] off the main thread: parsing a multi-megabyte pcap is not cheap. */
+    suspend fun analyzeArtifactSuspending(name: String): HashExtractResult? =
+        withContext(Dispatchers.IO) { analyzeArtifact(name) }
 
     /** Hash lines previously extracted for an artifact (empty when none). */
     fun hashLines(name: String): List<String> = artifacts.hashLines(name)
@@ -1186,7 +1254,11 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
 
     private fun commitList(listCode: String) {
         when (listCode) {
-            "a" -> { _aps.value = apBuf.toList(); apBuf.clear() }
+            "a" -> {
+                _aps.value = apBuf.toList()
+                rememberEssids(apBuf)
+                apBuf.clear()
+            }
             "s" -> { _ssids.value = ssidBuf.toList(); ssidBuf.clear() }
             "c" -> { _stations.value = staBuf.toList(); staBuf.clear() }
             "i" -> { _ips.value = ipBuf.toList(); ipBuf.clear() }
@@ -1290,6 +1362,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     companion object {
         private const val MAX_CONSOLE = 800
         private const val MAX_SAMPLES = 120
+    private const val MAX_ESSIDS_SEEN = 64
 
         /** Free heap (bytes) below which a streaming capture is stopped early. */
         private const val LOW_HEAP_BYTES = 40_000L

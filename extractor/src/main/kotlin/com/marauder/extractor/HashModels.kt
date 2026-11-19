@@ -30,6 +30,24 @@ data class ExtractReport(
     val hashes: List<ExtractedHash>,
     val recordsParsed: Int,     // pcap records consumed
     val eapolFrames: Int,       // EAPOL-Key frames seen
-    val beacons: Int,           // beacon frames seen (ESSID source)
+    val beacons: Int,           // beacon / probe-response frames seen (ESSID source)
     val notes: List<String>,    // human-readable diagnostics (loss, quirks)
-)
+    // --- why a capture yielded what it yielded (the UI shows these when 0 hashes) --
+    val dataFrames: Int = 0,    // 802.11 data frames seen
+    val m1Frames: Int = 0,      // AP messages carrying the ANonce
+    val m2Frames: Int = 0,      // client messages carrying MIC + SNonce
+    val m3Frames: Int = 0,      // AP messages with MIC (ANonce source when M1 is missing)
+    val m4Frames: Int = 0,      // client ACKs (no key material)
+    val pmkidFrames: Int = 0,   // frames whose key data held a PMKID
+    val pairs: Int = 0,         // usable handshake pairs found
+    val pairsNoApMessage: Int = 0, // M2s whose AP message (M1 or M3) never reached the capture
+    val badRecords: Int = 0,    // broken pcap records skipped (capture frames lost in transit)
+    val resyncs: Int = 0,       // times the record stream was found again
+    val lostBytes: Int = 0,     // bytes skipped while resyncing
+    val shortEapol: Int = 0,    // EAPOL frames too short to be usable
+    val pairsNoSsid: Int = 0,   // credentials dropped because the SSID is unknown
+    val ssidFromScan: Int = 0,  // credentials whose SSID came from the app's scan list
+) {
+    /** True when the capture holds anything the cracker can work on. */
+    val usable: Boolean get() = hashes.isNotEmpty()
+}

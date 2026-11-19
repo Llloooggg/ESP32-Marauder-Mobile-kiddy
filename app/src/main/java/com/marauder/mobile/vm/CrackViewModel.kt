@@ -7,6 +7,8 @@ import com.marauder.mobile.MarauderApp
 import com.marauder.mobile.crack.Backend
 import com.marauder.mobile.crack.CrackConfig
 import com.marauder.mobile.crack.CrackEvent
+import com.marauder.extractor.CrackCore
+import com.marauder.extractor.HashInspection
 import com.marauder.mobile.data.Wordlist
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,6 +41,13 @@ data class CrackUiState(
     val found: Map<Int, String> = emptyMap(),
     val exhausted: Boolean = false,
     val error: String? = null,
+
+    /**
+     * What each extracted hash line really holds, with the reasons a line cannot
+     * be cracked. This is the answer to "I tried the right password and it did
+     * not match" — the line, not the password, is usually the problem.
+     */
+    val inspections: List<HashInspection> = emptyList(),
 ) {
     val canRun: Boolean get() = hashLines.isNotEmpty() && selected.isNotEmpty() && !running
     val progress: Float get() = if (totalGuesses <= 0) 0f else (doneGuesses.toFloat() / totalGuesses).coerceIn(0f, 1f)
@@ -72,6 +81,7 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
             targetName = artifactName,
             targetTitle = record?.title?.ifBlank { artifactName } ?: artifactName,
             hashLines = lines,
+            inspections = lines.map { CrackCore.inspect(it) },
             pmkid = record?.meta?.get("pmkid")?.toIntOrNull() ?: 0,
             handshakes = record?.meta?.get("handshakes")?.toIntOrNull() ?: 0,
             alreadyCracked = record?.meta?.get("cracked"),
@@ -131,7 +141,9 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = s.copy(
             running = true,
             doneGuesses = 0L,
-            totalGuesses = s.totalWords * s.hashLines.size,
+            // The engine counts words tried (one PBKDF2 per network per word), so the
+            // denominator must be words too — otherwise the bar and the ETA lie.
+            totalGuesses = s.totalWords,
             rate = 0.0,
             found = emptyMap(),
             exhausted = false,

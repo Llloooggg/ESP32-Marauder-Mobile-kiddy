@@ -221,6 +221,140 @@ object CrackCore {
     }
 
     private fun unhexLenient(s: String): ByteArray? = if (s.isEmpty()) ByteArray(0) else unhexAny(s)
+
+    /**
+     * Human-readable read-out of one 22000 line, for the "why can't this be
+     * cracked?" question. Unlike [parse] it reports what it sees even when the
+     * record is unusable, and lists the reasons.
+     */
+    fun inspect(line: String): HashInspection {
+        val problems = mutableListOf<String>()
+        val notes = mutableListOf<String>()
+        val p = line.trim().split("*")
+        if (p.size < 7 || p[0] != "WPA") {
+            return HashInspection(
+                line = line, kind = null, essidText = "", essidHex = "", ap = "", sta = "",
+                keyver = 0, messagePair = -1, anonceHex = "", micHex = "", eapolBytes = 0,
+                problems = listOf("not a hashcat-22000 line (expected WPA*01*… or WPA*02*…)"),
+                notes = emptyList(),
+            )
+        }
+        val ap = formatMac(p[3])
+        val sta = formatMac(p[4])
+        val essidHex = p[5]
+        val essid = unhexLenient(essidHex) ?: ByteArray(0)
+        val essidText = printable(essid)
+        if (essid.isEmpty()) {
+            problems += "SSID field is empty — the SSID is the PBKDF2 salt, so no candidate password can ever match. Re-extract the capture (a beacon or the scan list supplies the SSID)."
+        }
+        return when (p[1]) {
+            "01" -> {
+                val pmkid = unhexAny(p[2]) ?: ByteArray(0)
+                if (pmkid.size != 16) problems += "PMKID field is ${pmkid.size} bytes, expected 16"
+                if (pmkid.isNotEmpty() && pmkid.all { it == 0.toByte() })
+                    problems += "PMKID is all zeros — nothing to check a candidate against"
+                notes += "PMKID credential: the password is tested against the AP's own PMKID element, no handshake needed"
+                HashInspection(
+                    line = line, kind = HashKind.PMKID, essidText = essidText, essidHex = essidHex,
+                    ap = ap, sta = sta, keyver = 0, messagePair = 255, anonceHex = "",
+                    micHex = hex(pmkid), eapolBytes = 0, problems = problems, notes = notes,
+                )
+            }
+            "02" -> {
+                val mic = unhexAny(p[2]) ?: ByteArray(0)
+                val anonce = unhexAny(p[6]) ?: ByteArray(0)
+                val eapol = unhexAny(p[7]) ?: ByteArray(0)
+                val mpToken = p.getOrNull(8)
+                val mp = if (mpToken != null && mpToken.length == 2) (unhexAny(mpToken)?.firstOrNull()?.toInt() ?: -1) and 0xFF else -1
+                if (mic.size != 16) problems += "MIC field is ${mic.size} bytes, expected 16"
+                if (mic.isNotEmpty() && mic.all { it == 0.toByte() })
+                    problems += "stored MIC is all zeros — there is no checksum to verify a candidate against (the capture held no real M2)"
+                if (anonce.size != 32) problems += "ANonce field is ${anonce.size} bytes, expected 32"
+                if (anonce.isNotEmpty() && anonce.all { it == 0.toByte() })
+                    problems += "ANonce is all zeros — the AP's handshake message never made it into the capture, so this credential can never verify a password. Re-extract with the current build: it rebuilds the ANonce from an M3 when the M1 was lost."
+                if (eapol.size < 99) problems += "stored EAPOL frame is ${eapol.size} bytes — below the 99-byte EAPOL-Key header, the MIC cannot be recomputed"
+                var keyver = 0
+                if (eapol.size >= 7) {
+                    val keyInfo = be16(eapol, 5)
+                    keyver = keyInfo and 0x0007
+                    if (keyver !in 1..3) problems += "EAPOL key version is $keyver — that is not a WPA/WPA2 key frame"
+                    if (keyInfo and 0x0100 == 0)
+                        problems += "the stored frame has no MIC flag in its key-info bits — the extractor stored the wrong message (an M1/M4 cannot carry a MIC)"
+                    if (keyInfo and 0x0080 != 0)
+                        notes += "stored frame is an M3 (ACK + MIC): paired as M3+M2 because the M1 was missing"
+                    if (keyInfo and 0x0007 == 1) notes += "key version 1 (legacy WPA/TKIP MIC)"
+                    if (keyInfo and 0x0007 == 3) notes += "key version 3 (PSK-SHA256 / FT): SHA256-based MIC"
+                }
+                // hashcat/hcxtools put the pair index in the low 3 bits and keep flags
+                // above it (0x10 = captured without an AP, 0x80 = replay counter not
+                // checked), so both have to be read separately.
+                when (mp and 0x07) {
+                    0 -> notes += "message pair 0 (M1+M2)"
+                    1 -> notes += "message pair 1 (M1+M4)"
+                    2 -> notes += "message pair 2 (M3 supplied the ANonce, the M2 supplies the MIC)"
+                    3 -> notes += "message pair 3 (M3+M3)"
+                    4 -> notes += "message pair 4 (M3+M4)"
+                    5 -> notes += "message pair 5 (M3 stored, SNonce in the nonce field)"
+                }
+                if (mp and 0x10 != 0) notes += "flag 0x10: captured without the AP's own frame (ap-less capture)"
+                if (mp and 0x80 != 0) notes += "flag 0x80: replay counter not verified by the capture"
+                if (mp < 0) problems += "message-pair token is missing or not one hex byte"
+                HashInspection(
+                    line = line, kind = HashKind.HANDSHAKE, essidText = essidText, essidHex = essidHex,
+                    ap = ap, sta = sta, keyver = keyver, messagePair = mp, anonceHex = hex(anonce),
+                    micHex = hex(mic), eapolBytes = eapol.size, problems = problems, notes = notes,
+                )
+            }
+            else -> HashInspection(
+                line = line, kind = null, essidText = essidText, essidHex = essidHex, ap = ap, sta = sta,
+                keyver = 0, messagePair = -1, anonceHex = "", micHex = "", eapolBytes = 0,
+                problems = listOf("unknown WPA record type '${p[1]}' (this build cracks 01 = PMKID and 02 = handshake)"),
+                notes = emptyList(),
+            )
+        }
+    }
+
+    private fun formatMac(hexToken: String): String =
+        if (hexToken.length != 12) hexToken
+        else (0 until 6).joinToString(":") { hexToken.substring(it * 2, it * 2 + 2) }
+
+    private fun hex(b: ByteArray): String = b.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+
+    private fun printable(b: ByteArray): String {
+        val s = String(b, Charsets.UTF_8)
+        return if (s.all { it.code in 32..126 }) s else "<non-printable, ${b.size} bytes>"
+    }
+}
+
+/**
+ * What one 22000 line actually contains, plus the reasons it cannot be cracked.
+ * A line can parse and still be worthless (a zero ANonce, a zero MIC, an empty
+ * SSID) — the UI shows these so "my real password did not work" has an answer.
+ */
+data class HashInspection(
+    val line: String,
+    val kind: HashKind?,
+    val essidText: String,
+    val essidHex: String,
+    val ap: String,
+    val sta: String,
+    val keyver: Int,
+    val messagePair: Int,
+    val anonceHex: String,
+    val micHex: String,
+    val eapolBytes: Int,
+    val problems: List<String>,
+    val notes: List<String>,
+) {
+    /** True when a cracker can do something with this line. */
+    val crackable: Boolean get() = kind != null && problems.isEmpty()
+
+    /** Short label for lists. */
+    val label: String get() = when (kind) {
+        HashKind.PMKID -> "PMKID · $essidText"
+        HashKind.HANDSHAKE -> "handshake · $essidText · keyver $keyver"
+        null -> "unparseable line"
+    }
 }
 
 /** Minimal shared crypto. Uses JDK primitives only; AES-CMAC is hand-rolled (RFC 4493). */
