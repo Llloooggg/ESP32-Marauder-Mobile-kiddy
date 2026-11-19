@@ -27,7 +27,7 @@ object WardriveAssembler {
     /** CSV preamble + column header. [appRelease] identifies the producing app. */
     fun header(appRelease: String): String =
         "WigleWifi-1.4,appRelease=$appRelease,model=ESP32 Marauder,release=$appRelease," +
-            "device=Marauder Mobile,display=phone,board=ESP32 Marauder,brand=JustCallMeKoko\n" +
+            "device=${ReportBuilder.APP_LABEL},display=phone,board=ESP32 Marauder,brand=JustCallMeKoko\n" +
             "MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude," +
             "AltitudeMeters,AccuracyMeters,Type\n"
 

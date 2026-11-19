@@ -13,13 +13,13 @@ object GpxAssembler {
 
     const val TRACK_HEADER =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-            "<gpx version=\"1.1\" creator=\"Marauder Mobile\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n" +
+            "<gpx version=\"1.1\" creator=\"${ReportBuilder.APP_LABEL}\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n" +
             "  <trk><name>Marauder Track</name><trkseg>\n"
     const val TRACK_FOOTER = "  </trkseg></trk>\n</gpx>\n"
 
     const val POI_HEADER =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-            "<gpx version=\"1.1\" creator=\"Marauder Mobile\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n"
+            "<gpx version=\"1.1\" creator=\"${ReportBuilder.APP_LABEL}\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n"
     const val POI_FOOTER = "</gpx>\n"
 
     fun trackPoint(loc: PhoneLocation): String =

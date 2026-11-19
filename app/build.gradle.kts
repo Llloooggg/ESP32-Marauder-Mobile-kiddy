@@ -22,16 +22,17 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        // Fork identity: a different applicationId installs this build SIDE BY SIDE
-        // with the upstream ESP32-Marauder-Mobile app. Only the installed id differs
-        // — the code namespace stays com.marauder.mobile, so no source file had to be
-        // renamed. Each install keeps its own data directory, so captures made by one
-        // app are not visible to the other (share them out of the Library to move them).
+        // Identity of this build. A different applicationId lets it install SIDE BY
+        // SIDE with the upstream ESP32-Marauder-Mobile app; the name follows the
+        // repository (…-Mobile-kiddy). The code namespace stays com.marauder.mobile,
+        // so no source file had to be renamed. Each install keeps its own data
+        // directory, so captures made by one app are not visible to the other
+        // (share them out of the Library to move them).
         applicationId = "com.marauder.mobile.kiddy"
         minSdk = 26
         targetSdk = 35
         versionCode = 8
-        versionName = "1.4.0-fork"
+        versionName = "1.4.0-kiddy"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -68,6 +69,9 @@ android {
     }
     buildFeatures {
         compose = true
+        // The About screen and the report header print the real version instead of
+        // a hardcoded string that goes stale every release.
+        buildConfig = true
     }
     packaging {
         resources {

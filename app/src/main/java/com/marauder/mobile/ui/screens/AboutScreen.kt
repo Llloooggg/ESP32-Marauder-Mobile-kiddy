@@ -40,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.marauder.mobile.BuildConfig
 import com.marauder.mobile.R
 
 private const val REPO_URL = "https://github.com/0xsys/ESP32-Marauder-Mobile"
@@ -91,8 +92,21 @@ fun AboutScreen(onBack: () -> Unit, onShowTerms: () -> Unit = {}) {
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    "ESP32 Marauder · v1.0.0",
+                    "KIDDY",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 6.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    // Read from the build: a hardcoded version here goes stale every release.
+                    "ESP32 Marauder · v${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "installs next to Marauder Mobile · ${BuildConfig.APPLICATION_ID}",
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

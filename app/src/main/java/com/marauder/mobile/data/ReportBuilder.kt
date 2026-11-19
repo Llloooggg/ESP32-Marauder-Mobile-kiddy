@@ -48,11 +48,14 @@ data class ReportResult(val markdown: String, val archive: File, val entries: In
  */
 object ReportBuilder {
 
+    /** Name this build writes into its own artifacts (GPX, CSV, reports). */
+    const val APP_LABEL = "Marauder Kiddy"
+
     /** Render the human-readable report. */
     fun markdown(input: ReportInput): String = buildString {
         appendLine("# ESP32 Marauder session report")
         appendLine()
-        appendLine("Generated: ${stamp(input.generatedAt)} · app ${input.appVersion.ifBlank { "?" }}")
+        appendLine("Generated: ${stamp(input.generatedAt)} · app $APP_LABEL ${input.appVersion.ifBlank { "?" }}")
         input.board?.let {
             appendLine("Board: ${it.board} · firmware ${it.fw} · json proto ${it.proto}")
         }

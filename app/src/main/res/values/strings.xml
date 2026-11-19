@@ -1,6 +1,8 @@
 <resources>
-    <!-- Launcher label: this fork installs alongside the upstream app, so the
-         icon has to read differently in the launcher. -->
-    <string name="app_name">Marauder (fork)</string>
+    <!-- Launcher label. This build installs SIDE BY SIDE with the upstream app,
+         so it has to read differently in the launcher: it takes the name of the
+         repository it lives in (ESP32-Marauder-Mobile-kiddy) rather than a
+         "(fork)" suffix. -->
+    <string name="app_name">Marauder Kiddy</string>
     <string name="usb_permission">com.marauder.mobile.kiddy.USB_PERMISSION</string>
 </resources>
