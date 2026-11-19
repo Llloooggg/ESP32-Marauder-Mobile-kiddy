@@ -49,8 +49,11 @@ object ExtractTool {
         println("records parsed   : ${report.recordsParsed}")
         println("beacons          : ${report.beacons}")
         println("EAPOL key frames : ${report.eapolFrames}  (M1 ${report.m1Frames} / M2 ${report.m2Frames} / " +
-            "M3 ${report.m3Frames} / M4 ${report.m4Frames} / PMKID ${report.pmkidFrames})")
+            "M3 ${report.m3Frames} / M4 ${report.m4Frames} / PMKID ${report.pmkidFrames} / " +
+            "AP-empty ${report.apEmptyEapolFrames})")
         println("usable pairs     : ${report.pairs}  (no AP message: ${report.pairsNoApMessage})")
+        println("EAPOL senders    : from AP ${report.eapolFromAp} / from client ${report.eapolFromClient}" +
+            "  (Retry bit set: ${report.eapolRetried})")
         println("bad records      : ${report.badRecords}  resyncs: ${report.resyncs}  lost bytes: ${report.lostBytes}")
         println("short EAPOL      : ${report.shortEapol}   dropped for missing SSID: ${report.pairsNoSsid}" +
             "   SSID from hints: ${report.ssidFromScan}")

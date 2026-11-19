@@ -70,17 +70,26 @@ class SettingsRepository(context: Context) {
     }
 }
 
-/** Line rates worth offering for `jsonbaud`, with what they buy and risk. */
+/**
+ * Line rates worth offering for `jsonbaud`, with what they buy and risk.
+ *
+ * The distinction that matters is the board's USB implementation, and the firmware's own
+ * interface document is explicit about it (`JSON_SERIAL_INTERFACE.md` §5): the rate means
+ * something on a real UART bridge (CH340, CP210x), while on the ESP32-S2/S3's built-in USB
+ * (`usb_serial_jtag` / native CDC) `updateBaudRate()` is a no-op — the link runs at USB speed
+ * whatever was asked, and the `{"t":"baud"}` answer arrives anyway. So a confirmed change on
+ * such a board proves the command worked, not that bytes move faster.
+ */
 data class LineRateOption(val rate: Int, val label: String, val hint: String) {
 
     companion object {
         /** `0` means "leave the board alone". */
         val OPTIONS = listOf(
-            LineRateOption(0, "115200 (board default)", "Rock solid on every bridge, including CH340. Enough for handshakes and PMKID captures."),
-            LineRateOption(460800, "460800", "Roughly 4× the bytes through. Usually fine on CP210x / native USB-CDC boards."),
-            LineRateOption(921600, "921600", "Roughly 8×. Good on CP210x and ESP32-S2/S3 native USB; CH340 often cannot hold it."),
-            LineRateOption(1500000, "1500000", "Maximum sane rate for heavy pcap streaming. Needs a good bridge and cable."),
-            LineRateOption(2000000, "2000000", "Maximum the firmware accepts. Only try this on native USB-CDC boards."),
+            LineRateOption(0, "115200 (board default)", "The rate every bridge boots at. Enough for handshakes and PMKID captures."),
+            LineRateOption(460800, "460800", "About 4x more bytes on a CP210x/CH340 UART bridge. On the ESP32-S2/S3's built-in USB this is answered but changes nothing — that link runs at USB speed."),
+            LineRateOption(921600, "921600", "About 8x on a CP210x bridge; CH340 often cannot hold it. Built-in USB boards ignore the value: the answer is a formality there."),
+            LineRateOption(1500000, "1500000", "Heavy pcap streaming over a good UART bridge and cable. Built-in USB: no effect."),
+            LineRateOption(2000000, "2000000", "The highest rate the firmware accepts, for fast UART bridges only. It is never a fix for a board that loses console characters on its own USB."),
         )
 
         fun label(rate: Int): String = OPTIONS.firstOrNull { it.rate == rate }?.label ?: "$rate"

@@ -191,12 +191,20 @@ class ArtifactsRepository(context: Context) {
             "hashLines" to result.hashLines.size.toString(),
             // Why a "0 handshakes" result happened, in the raw counts the UI shows.
             "frames" to result.frames.toString(),
-            "eapol" to result.eapolFrames.toString(),
+            CaptureDiagnosis.META_EAPOL_TOTAL to result.eapolFrames.toString(),
             "beacons" to result.beacons.toString(),
             "m1" to result.m1.toString(),
             "m2" to result.m2.toString(),
             "m3" to result.m3.toString(),
             "m4" to result.m4.toString(),
+            // Who transmitted the EAPOL. A capture full of FromDS frames (the AP repeating itself at a
+            // client that never answered) yields 0 hashes for a reason no cracker can fix, so the
+            // record has to carry that, not just the total. Keys come from CaptureDiagnosis so the
+            // row cannot read a key the writer never wrote.
+            CaptureDiagnosis.META_EAPOL_FROM_AP to result.eapolFromAp.toString(),
+            CaptureDiagnosis.META_EAPOL_FROM_CLIENT to result.eapolFromClient.toString(),
+            CaptureDiagnosis.META_EAPOL_RETRIED to result.eapolRetried.toString(),
+            CaptureDiagnosis.META_EAPOL_AP_EMPTY to result.apEmptyEapol.toString(),
             "badRecords" to result.badRecords.toString(),
             "lostBytes" to result.lostBytes.toString(),
             // Which networks the extracted material belongs to — compared against the

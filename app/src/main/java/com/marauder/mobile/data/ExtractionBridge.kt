@@ -25,6 +25,14 @@ data class HashExtractResult(
     val m2: Int = 0,                // client messages with MIC + SNonce
     val m3: Int = 0,                // AP messages with MIC (ANonce when M1 was missed)
     val m4: Int = 0,                // client ACKs (no key material)
+    // Which side put each EAPOL on the air. A capture can hold hundreds of EAPOL frames and still be
+    // worthless: if every one came from an access point (usually retransmitted), the client never
+    // answered and no handshake exists to rebuild. "EAPOL 246, 0 handshakes" hides that; this names it.
+    val eapolFromAp: Int = 0,
+    val eapolFromClient: Int = 0,
+    val eapolRetried: Int = 0,      // Retry bit set: the sender was repeating itself at a silent peer
+    /** EAPOL sent by an AP with no ANonce and no key data: neither an M1 nor an M4. */
+    val apEmptyEapol: Int = 0,
     val badRecords: Int = 0,        // broken records: frames lost between board and phone
     val lostBytes: Int = 0,         // bytes skipped while getting the record stream back
     /** BSSIDs the extracted material actually belongs to, uppercase, sorted. */
@@ -38,6 +46,38 @@ data class HashExtractResult(
     val saeAuthFrames: Int = 0,
 ) {
     val usable: Boolean get() = hashLines.isNotEmpty()
+
+    /** Same claim the stored record makes, decided by the shared rule. */
+    val eapolOnlyFromAp: Boolean
+        get() = CaptureDiagnosis.eapolOnlyFromAp(eapolFrames, eapolFromClient)
+}
+
+/**
+ * What a capture is allowed to claim, decided in one place so the console line, the artifact row and
+ * the JSON record cannot tell different stories about the same bytes. A field run of this shape:
+ * 246 EAPOL frames, all FromDS, 233 of them retransmitted, nothing from the client — the handshake
+ * never started, and no wordlist or GPU changes that.
+ */
+object CaptureDiagnosis {
+    /** Meta keys carrying the extractor's EAPOL direction counts (written by ArtifactsRepository). */
+    const val META_EAPOL_TOTAL = "eapol"
+    const val META_EAPOL_FROM_CLIENT = "eapol_client"
+    const val META_EAPOL_FROM_AP = "eapol_ap"
+    const val META_EAPOL_RETRIED = "eapol_retry"
+    const val META_EAPOL_AP_EMPTY = "ap_empty"
+
+    /**
+     * True only when EAPOL was seen and the client side contributed nothing. A count that is unknown
+     * (`null`, e.g. a record written by an older app version) answers false: the app does not claim
+     * a client silence it cannot read back.
+     */
+    fun eapolOnlyFromAp(eapolFrames: Int, eapolFromClient: Int?): Boolean = eapolFrames > 0 && eapolFromClient == 0
+
+    /** The same rule applied to a stored record's meta. */
+    fun eapolOnlyFromAp(meta: Map<String, String>): Boolean {
+        val total = meta[META_EAPOL_TOTAL]?.toIntOrNull() ?: return false
+        return eapolOnlyFromAp(total, meta[META_EAPOL_FROM_CLIENT]?.toIntOrNull())
+    }
 }
 
 /**

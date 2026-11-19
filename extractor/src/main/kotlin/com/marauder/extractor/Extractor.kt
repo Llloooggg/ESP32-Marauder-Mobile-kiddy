@@ -128,6 +128,13 @@ object Extractor {
                     else { aa = mac(b, 4); spa = mac(b, 10) }
                     if (aa == spa) { stats.selfFrames++; continue }
 
+                    // Which side put the frame on the air. This distinguishes two captures that both
+                    // report "0 usable pairs": one heard no EAPOL at all, the other heard hundreds of
+                    // AP frames while the client stayed silent — the AP was retransmitting (Retry bit)
+                    // to a client that never answered, and no wordlist or GPU changes that.
+                    if (fromDs) stats.eapolFromAp++ else stats.eapolFromClient++
+                    if ((fcHi and 0x08) != 0) stats.eapolRetried++
+
                     if (eapol.size < 97) { stats.shortEapol++; continue }
                     val keyInfo = be16(eapol, 5)
                     val ack = (keyInfo and 0x0080) != 0
@@ -171,14 +178,21 @@ object Extractor {
                             stats.m3Frames++
                             if (nonce.any { it != 0.toByte() }) m3s.getOrPut(key) { ArrayList(4) }.add(kf)
                         }
-                        // Ack set, MIC clear: M1 (has nonce + key data) or M4 (has neither).
+                        // Ack set, MIC clear: M1 (has nonce + key data) or an empty frame.
                         else -> {
                             val hasNonce = nonce.any { it != 0.toByte() }
                             if (hasNonce && keyDataLen > 0) {
                                 stats.m1Frames++
                                 m1s.getOrPut(key) { ArrayList(4) }.add(kf)
+                            } else if (fromDs) {
+                                // Sent by an access point and carries neither an ANonce nor key data.
+                                // It is not an M1 (an M1 announces the ANonce) and it is not an M4
+                                // either - the M4 is by definition the client's ACK of M3. Calling
+                                // these M4 told a story about a client that had never spoken, and a
+                                // reader would go looking for a handshake that this air never carried.
+                                stats.apEmptyEapol++
                             } else {
-                                stats.m4Frames++   // pure ACK: no key material to use
+                                stats.m4Frames++   // client ACK: no key material to use
                             }
                         }
                     }
@@ -251,6 +265,10 @@ object Extractor {
             m2Frames = stats.m2Frames,
             m3Frames = stats.m3Frames,
             m4Frames = stats.m4Frames,
+            eapolFromAp = stats.eapolFromAp,
+            eapolFromClient = stats.eapolFromClient,
+            eapolRetried = stats.eapolRetried,
+            apEmptyEapolFrames = stats.apEmptyEapol,
             pmkidFrames = stats.pmkidFrames,
             pairs = pairs.size,
             pairsNoApMessage = stats.pairsNoApNonce,
@@ -799,6 +817,12 @@ object Extractor {
         var parsed = 0
         var beacons = 0
         var eapolFrames = 0
+        /** EAPOL carried by FromDS frames, i.e. sent by an access point. */
+        var eapolFromAp = 0
+        /** EAPOL carried by ToDS frames, i.e. sent by a client - the side that makes a handshake rebuildable. */
+        var eapolFromClient = 0
+        /** EAPOL whose Retry bit was set: the sender was retransmitting, usually because the peer never answered. */
+        var eapolRetried = 0
         var dataLikeFrames = 0
         var notEapolLlc = 0
         var wdsFrames = 0
@@ -810,6 +834,8 @@ object Extractor {
         var m2Frames = 0
         var m3Frames = 0
         var m4Frames = 0
+        /** EAPOL-Key frames sent by an access point that carry no ANonce and no key data. */
+        var apEmptyEapol = 0
         var pmkidFrames = 0
         var pairsM1M2 = 0
         var pairsM3M2 = 0
@@ -833,10 +859,20 @@ object Extractor {
         /** Human-readable diagnostics: counts only where they change the picture. */
         fun notes(): List<String> {
             val out = ArrayList(freeNotes)
+            if (eapolFrames > 0 && eapolFromClient == 0) {
+                out += "$eapolFrames EAPOL frame(s) were captured and every one of them came from an access point" +
+                    (if (eapolRetried > 0) " ($eapolRetried of them were retransmissions, Retry bit set)" else "") +
+                    ": not one was sent by a client, so the handshake never got past the AP's first message. " +
+                    "Nothing in this file is rebuildable and no wordlist or GPU changes that - what is missing " +
+                    "are frames from the client side"
+            }
             if (pairsNoApNonce > 0) out += "$pairsNoApNonce client message(s) (M2) had no matching AP message — " +
                 "the AP's frame never reached the capture, so that handshake cannot be rebuilt"
-            if (m4Frames > 0) out += "$m4Frames final ACK frame(s) (M4) seen — they carry no key material, " +
+            if (m4Frames > 0) out += "$m4Frames client ACK frame(s) (M4) seen — they carry no key material, " +
                 "they are not the AP message a handshake needs"
+            if (apEmptyEapol > 0) out += "$apEmptyEapol EAPOL frame(s) sent by an access point carried neither an " +
+                "ANonce nor key data — they are not M1s (an M1 announces the ANonce) and cannot be M4s " +
+                "(an M4 is always sent by a client), so there is nothing to pair them with"
             if (replayMismatch > 0) out += "$replayMismatch pair(s) matched with mismatched replay counters"
             if (truncatedEapol > 0) out += "$truncatedEapol EAPOL frame(s) cut short by the capture (kept what arrived)"
             if (shortEapol > 0) out += "$shortEapol EAPOL frame(s) too short to carry a MIC — ignored"

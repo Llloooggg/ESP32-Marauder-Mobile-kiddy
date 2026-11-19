@@ -99,6 +99,29 @@ class ScenarioSanityTest {
     }
 
     @Test
+    fun channelDependentPlaybooksSayWhatTheRadioCannotHear() {
+        // Anything that runs on one channel has to say so: the board is 2.4 GHz only, and a mode
+        // that does not hop hears exactly where it sits, so an empty result is a radio fact that
+        // the playbook owns, not a mystery the user has to debug.
+        val silent = Scenarios.all.filter { s ->
+            val text = (s.command + " " + s.steps.joinToString(" ") { it.command ?: "" })
+            // A channel is being addressed when the command names {ch}, carries `-c <number>`,
+            // or ends in a bare `-c` (the firmware's "only what is on the selected list" form).
+            // Other `-c` verbs (evilportal -c start) mean something else and are not in scope.
+            val channelDependent = Regex("""\{ch\}|-c\s+\d|\s-c$""").containsMatchIn(text)
+            channelDependent && (s.warn.isBlank() || !s.warn.contains("channel"))
+        }.map { it.id }
+        assertEquals("playbooks that address a channel without saying so: $silent", emptyList<String>(), silent)
+
+        val band = Scenarios.all.filter { it.warn.contains("2.4 GHz") }.map { it.id }
+        assertTrue("playbooks that promise 2.4 GHz coverage must also say 5 GHz is inaudible", band.isNotEmpty())
+        val halfTruth = Scenarios.all.filter { s ->
+            s.warn.contains("2.4 GHz") && !s.warn.contains("5 GHz") && !s.warn.contains("above 14")
+        }.map { it.id }
+        assertEquals("one-sided band warnings: $halfTruth", emptyList<String>(), halfTruth)
+    }
+
+    @Test
     fun instantiateFillsTheLiveSlotAndChannelOnly() {
         val cmd = Scenarios.instantiate("sniffpmkid -c {ch} -d -l", slot = 4, channel = 11)
         assertEquals("sniffpmkid -c 11 -d -l", cmd)

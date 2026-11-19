@@ -189,9 +189,15 @@ object FirmwareCommands {
 
     // --- builders ---------------------------------------------------------------------
 
-    /** `select -a <slot>` toggles one AP slot (CommandLine.cpp, SEL_CMD branch). */
+    /**
+     * `select -a <slot>` toggles one AP slot (CommandLine.cpp, SEL_CMD branch). Verified on a real
+     * board, and it bites: `add -a -b <mac> -ch <n> -e <ssid>` inserts the AP **already selected**
+     * ("Added AP [0][CH:7] … (selected)"), so following it with `select -a 0` removes the selection
+     * and the next `sniffpmkid -l` answers "You don't have any targets selected". Anything that
+     * needs a known selection reads the board's own `jsonlist a` / `sel` flag first and toggles only
+     * when the flag disagrees — see TargetLock.
+     */
     fun toggleAp(slot: Int): String = "$SELECT -a $slot"
-
     /** `select -a <slot>[,<slot>…]`: one line can address many slots (the firmware splits on `,`). */
     fun selectApSlots(slots: List<Int>): String = "$SELECT -a ${slots.joinToString(",")}"
 

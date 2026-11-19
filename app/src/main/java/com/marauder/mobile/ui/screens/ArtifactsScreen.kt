@@ -52,6 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.marauder.mobile.data.Artifact
 import com.marauder.mobile.data.ArtifactRecord
+import com.marauder.mobile.data.CaptureDiagnosis
 import com.marauder.mobile.ui.shareFile
 import com.marauder.mobile.ui.components.EmptyState
 import com.marauder.mobile.ui.components.StatChip
@@ -184,6 +185,11 @@ private fun ArtifactRow(artifact: Artifact, onClick: () -> Unit) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     HashStateChip(record)
                     record.meta["eapolFrames"]?.let { StatChip("EAPOL", it, Success) }
+                    // EAPOL that only the access point transmitted — the client never answered, so there
+                    // is no handshake and no wordlist can produce one. That belongs on the row.
+                    if (CaptureDiagnosis.eapolOnlyFromAp(record.meta)) {
+                        StatChip("AP-ONLY EAPOL", record.meta[CaptureDiagnosis.META_EAPOL_TOTAL] ?: "", Warning)
+                    }
                     record.meta["missedFrames"]?.let { StatChip("GAPS", it, Warning) }
                 }
             }

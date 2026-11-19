@@ -609,6 +609,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         } else {
             _boardSettings.value = parsed
             _boardSettingsError.value = null
+            noteChanHopAsRead(parsed)
         }
         pendingSettingsCheck?.let { check ->
             pendingSettingsCheck = null
@@ -738,20 +739,52 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
      */
     private fun prepareChannelPin(channel: Int) {
         if (usb.status.value != UsbSerialManager.Status.CONNECTED) return
-        if (!hopDisabled) {
+        if (!hopDisabled && boardChanHop != false) {
             runCommand(FirmwareCommands.settingsSet("ChanHop", false))
             hopDisabled = true
         }
         runCommand(FirmwareCommands.channelSet(channel))
         appendConsole(
-            "Channel held for this run: the board answers `channel -s $channel` with the channel it set, " +
-                "and the hop is off while it runs (it is restored when you leave this screen).",
+            if (hopDisabled)
+                "Channel held for this run: the board answers `channel -s $channel` with the channel it set, " +
+                    "and the hop is off while it runs (it is restored to the value the board reported when you leave)."
+            else
+                "Channel held for this run: the board answers `channel -s $channel` with the channel it set, " +
+                    "and its own settings already keep the hop off, so nothing about the board was changed.",
             LineKind.SYSTEM,
         )
     }
 
     /** The board's `ChanHop` setting is off because this app turned it off. */
     private var hopDisabled = false
+
+    /**
+     * The board's own `ChanHop` value, exactly as its settings dump reported it; null until a
+     * dump has been read. [restoreHopping] goes back to this, so the app never leaves a board
+     * hopping when its owner had it parked on one channel — nor parked when they had it free.
+     */
+    private var boardChanHop: Boolean? = null
+
+    /**
+     * Record what the board says about its own hopping, and say it out loud when the answer is
+     * the one that silently empties a capture: a board with the hop off hears one channel only,
+     * so its own scan list cannot contain a network that lives elsewhere.
+     */
+    private fun noteChanHopAsRead(settings: List<BoardSetting>) {
+        val hop = settings.firstOrNull { it.name.equals("ChanHop", ignoreCase = true) } ?: return
+        val previous = boardChanHop
+        boardChanHop = hop.enabled
+        if (previous == hop.enabled) return
+        if (!hop.enabled && !hopDisabled) {
+            appendConsole(
+                "The board's own settings say ChanHop is off: it sits on one channel, so a scan here only sees the " +
+                    "networks that live on that channel, and only those can be listed or picked. The app did not " +
+                    "change that and will leave it as found. To reach a network on another channel, pin the channel " +
+                    "(`channel -s <n>`) or switch the hop on in Board settings.",
+                LineKind.SYSTEM,
+            )
+        }
+    }
 
     /**
      * Put the board into the state a passive sniff needs, and prove it got there.
@@ -772,12 +805,12 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     private suspend fun prepareEapolSniff(command: String): Boolean {
         if (usb.status.value != UsbSerialManager.Status.CONNECTED) return false
 
-        if (CaptureOps.needsHopOff(command) && !hopDisabled) {
-            runCommand("settings -s ChanHop disable")
+        if (CaptureOps.needsHopOff(command) && !hopDisabled && boardChanHop != false) {
+            runCommand(FirmwareCommands.settingsSet("ChanHop", false))
             hopDisabled = true
             appendConsole(
                 "ChanHop off: `-c ${CaptureOps.pinnedChannel(command)}` only sets the channel once — while that " +
-                    "setting is on the scan loop hops away after 2 s. It is restored when this stops.",
+                    "setting is on the scan loop hops away after 2 s. It is restored to the board's own value when this stops.",
                 LineKind.SYSTEM,
             )
         }
@@ -1137,7 +1170,15 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     private fun explainExtraction(r: HashExtractResult): String {
         val counts = buildString {
             append("frames ${r.frames}, EAPOL ${r.eapolFrames} ")
-            append("(M1 ${r.m1}, M2 ${r.m2}, M3 ${r.m3}, M4 ${r.m4})")
+            append("(M1 ${r.m1}, M2 ${r.m2}, M3 ${r.m3}, M4 ${r.m4}")
+            if (r.apEmptyEapol > 0) append(", AP-empty ${r.apEmptyEapol}")
+            append(")")
+            // The case a wordlist can never fix: EAPOL was heard, but only from the AP side.
+            if (r.eapolOnlyFromAp) {
+                append(" — every EAPOL came from the AP")
+                if (r.eapolRetried > 0) append(" (${r.eapolRetried} of them retransmitted)")
+                append(", not one from the client")
+            }
             if (r.badRecords > 0) append(", ${r.badRecords} record(s) lost in transit (+${r.lostBytes} B)")
         }
         return if (r.usable) {
@@ -2021,15 +2062,24 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
                 appendConsole("JSON mode ${if (msg.on) "enabled" else "disabled"}", LineKind.SYSTEM)
             is DeviceMessage.Baud -> {
                 // The device confirmed the new rate (sent at the OLD rate) and has
-                // switched; match it so the faster link is used from here on.
+                // switched; match it so the phone listens where the board now speaks. What the
+                // confirmation does NOT prove is that bytes move faster: on a board wired to its
+                // built-in USB (ESP32-S2/S3 native CDC / USB-Serial-JTAG) the firmware's own
+                // updateBaudRate() is a no-op and the answer is a formality — the link runs at USB
+                // speed whatever was asked. Only a UART bridge really changes.
                 usb.setBaud(msg.rate)
                 _activeLineRate.value = msg.rate
                 if (pendingBaud == msg.rate) {
                     pendingBaud = null
                     baudTimeout?.cancel()
-                    _snackbar.tryEmit("Serial link is now ${msg.rate} baud")
+                    _snackbar.tryEmit("Board confirmed ${msg.rate} baud")
                 }
-                appendConsole("Serial rate → ${msg.rate} baud", LineKind.SYSTEM)
+                appendConsole(
+                    "Board confirmed ${msg.rate} baud, and the app now listens there. On a board whose USB is the " +
+                        "ESP32's own (S2/S3 native CDC or USB-Serial-JTAG) that number is a formality: the firmware " +
+                        "answers but its link speed is set by USB, so only a UART bridge (CH340/CP210x) truly changes.",
+                    LineKind.SYSTEM,
+                )
             }
             is DeviceMessage.Drop -> {
                 _capture.value = _capture.value.copy(

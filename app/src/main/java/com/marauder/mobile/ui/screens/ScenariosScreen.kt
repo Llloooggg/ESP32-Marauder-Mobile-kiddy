@@ -219,6 +219,25 @@ private fun ScenarioCard(
             Spacer(Modifier.height(6.dp))
             Text(scenario.goal, style = MaterialTheme.typography.bodySmall, color = MarauderTextDim)
 
+            if (scenario.warn.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Row {
+                    Icon(
+                        Icons.Filled.Warning,
+                        contentDescription = "Before you trust an empty result",
+                        tint = Warning,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        scenario.warn,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Warning,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+
             if (needsTarget) {
                 Spacer(Modifier.height(10.dp))
                 Surface(

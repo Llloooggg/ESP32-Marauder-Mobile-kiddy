@@ -54,6 +54,13 @@ data class Scenario(
     val steps: List<ScenarioStep>,
     /** What the run produces and what to do with it — the part that makes it a job, not a button. */
     val outcome: String,
+    /**
+     * The condition that makes this playbook silently produce nothing, in the board's own terms.
+     * Anything that runs on one channel says it here: the ESP32-S3 has a 2.4 GHz radio only, and
+     * a mode that does not hop hears exactly the channel the board is sitting on — so a capture
+     * of a network that lives elsewhere is empty even though every command worked.
+     */
+    val warn: String = "",
     val run: ScenarioRun,
     val icon: ImageVector,
     val accent: Accent,
@@ -90,6 +97,12 @@ object Scenarios {
             outcome = "A pcap in the Library → open it → Extract to hashcat 22000 → crack on the " +
                 "phone (CPU or Vulkan). The mission screen also counts EAPOL frames and lost frames, " +
                 "so an empty capture says why.",
+            warn = "The ESP32-S3 has a 2.4 GHz radio only. A row whose channel is above 14 is a " +
+                "5 GHz interface of the same router, and this board can never hear its handshake — " +
+                "pick the 2.4 GHz row. `ChanHop` is also a board setting, not a per-run switch: a " +
+                "previous run that left it off keeps the radio on one channel, so the list here may " +
+                "hold only what is on that channel. Read the channel and RSSI of the row you picked, " +
+                "and only trust a capture that reports EAPOL frames.",
             run = ScenarioRun.PINNED_MISSION,
             command = "${FirmwareCommands.SNIFF_PMKID} -c {ch} -d -l",
             mode = ScenarioMode.CAPTURE,
@@ -113,6 +126,11 @@ object Scenarios {
             ),
             outcome = "A pcap in the Library when the traffic appears. Nothing was transmitted, so the " +
                 "run can be as quiet as the board allows; the same Extract → crack path follows.",
+            warn = "Two things decide whether this ever fills a file: the channel (this mode holds " +
+                "one, and a row whose channel is above 14 is a 5 GHz interface this 2.4 GHz board " +
+                "cannot hear), and the fact that nothing is transmitted — so a handshake only " +
+                "appears if some client joins or re-joins on its own while the board is listening " +
+                "on that exact channel.",
             run = ScenarioRun.MISSION,
             command = "${FirmwareCommands.SNIFF_PMKID} -c {ch}",
             mode = ScenarioMode.CAPTURE,
@@ -207,6 +225,10 @@ object Scenarios {
             ),
             outcome = "Nothing is captured by design. Stop with Stop; the mission log records what was " +
                 "sent, and the AP list shows the clients that dropped and rejoined.",
+            warn = "The board addresses the clients it can hear on the channel it is on, and its radio " +
+                "is 2.4 GHz only: a client that is associated to the router's 5 GHz interface will " +
+                "not move, no matter how long the flood runs. If nothing drops, that is usually where " +
+                "the client is, not a fault in the command.",
             run = ScenarioRun.PINNED_MISSION,
             command = "${FirmwareCommands.ATTACK} -t deauth -c",
             mode = ScenarioMode.ATTACK,
@@ -306,6 +328,10 @@ object Scenarios {
             ),
             outcome = "The recovered key, or an honest 'not in this wordlist' — with the effort counters, " +
                 "so the result can be re-checked on a PC with the same 22000 file.",
+            warn = "Extraction reports what was actually in the file: zero hash lines means the pcap " +
+                "carried no EAPOL at all, which is a capture problem (wrong channel, or a 5 GHz " +
+                "network this board cannot hear), not a cracker problem. Fix the capture before " +
+                "lengthening the wordlist.",
             run = ScenarioRun.NAVIGATE,
             navigate = MenuAction.OpenArtifacts,
             icon = Icons.Filled.FolderOpen,

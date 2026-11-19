@@ -83,6 +83,15 @@ data class ExtractReport(
     val m2Frames: Int = 0,      // client messages carrying MIC + SNonce
     val m3Frames: Int = 0,      // AP messages with MIC (ANonce source when M1 is missing)
     val m4Frames: Int = 0,      // client ACKs (no key material)
+    // Which side transmitted the EAPOL. A capture can hold hundreds of EAPOL frames and still be
+    // worthless: if every one of them is FromDS (from an access point, usually retransmitted), the
+    // client never answered and there is no handshake to rebuild. Saying this beats "0 pairs".
+    val eapolFromAp: Int = 0,
+    val eapolFromClient: Int = 0,
+    val eapolRetried: Int = 0,
+    // FromDS EAPOL with no ANonce and no key data: a class of its own, because labelling these as M4
+    // (which is always a client frame) made the report describe a client that never transmitted.
+    val apEmptyEapolFrames: Int = 0,
     val pmkidFrames: Int = 0,   // frames whose key data held a PMKID
     val pairs: Int = 0,         // usable handshake pairs found
     val pairsNoApMessage: Int = 0, // M2s whose AP message (M1 or M3) never reached the capture

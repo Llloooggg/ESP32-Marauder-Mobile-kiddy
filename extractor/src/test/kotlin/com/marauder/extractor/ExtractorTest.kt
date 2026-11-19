@@ -884,13 +884,14 @@ class ExtractorTest {
     }
 
     /**
-     * What a live capture of the board's own injected frames looks like: Ack set, MIC
-     * clear, a random Key IV, an empty KEY NONCE field and no key data. Such frames
-     * outnumber the real handshake in the capture, and calling them M1 is how a
-     * 144-EAPOL capture ends up with nothing usable in it.
+     * Frames like the ones a targeted run puts on the air in numbers: Ack set, MIC clear, a random
+     * Key IV, an empty KEY NONCE field, no key data, sent by the access point. They outnumber the
+     * real handshake, so their label decides whether the report explains itself. Calling them M1
+     * makes the capture look full of AP messages; calling them M4 invents a client that never
+     * transmitted (an M4 is the client's ACK of M3).
      */
     @Test
-    fun framesWithAnIvButNoNonceAreAcknowledgementsNotM1() {
+    fun apEapolWithNoNonceIsNeitherM1NorM4() {
         val forged = eapolKey(keyInfo = 0x008a, replay = 1, nonce = ByteArray(32), body = ByteArray(0))
         val pcap = PcapBuilder()
         pcap.frame(beacon(ssid))
@@ -898,7 +899,62 @@ class ExtractorTest {
         val rep = run(pcap.bytes())
 
         assertEquals(0, rep.m1Frames)
+        assertEquals("an M4 is a client frame, and these came from the AP", 0, rep.m4Frames)
+        assertEquals(4, rep.apEmptyEapolFrames)
+        assertTrue("the notes must name the class: ${rep.notes}",
+            rep.notes.any { it.contains("neither an ANonce nor key data") })
+    }
+
+    /** The same empty descriptor, transmitted by a client, is an M4 (the ACK of M3). */
+    @Test
+    fun emptyEapolFromAClientIsAnM4() {
+        val ack = eapolKey(keyInfo = 0x0082, replay = 1, nonce = ByteArray(32), body = ByteArray(0))
+        val pcap = PcapBuilder()
+        pcap.frame(beacon(ssid))
+        repeat(4) { pcap.frame(dataEapol(ack, fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true)) }
+        val rep = run(pcap.bytes())
+
         assertEquals(4, rep.m4Frames)
-        assertTrue(rep.notes.any { it.contains("M4") })
+        assertEquals(0, rep.apEmptyEapolFrames)
+        assertTrue("and it is described as a client frame: ${rep.notes}",
+            rep.notes.any { it.contains("client ACK") })
+    }
+
+    // A field capture of this shape: a targeted 130 s run, 246 EAPOL frames, nothing crackable.
+    // Every one of them came from the access point and most were retransmissions - the client never
+    // answered. "usable pairs: 0" alone hides that diagnosis; the direction counters name it.
+
+    @Test
+    fun apOnlyEapolNamesTheClientSilence() {
+        val pcap = PcapBuilder()
+        pcap.frame(beacon(ssid))
+        repeat(6) {
+            pcap.frame(dataEapol(m4Frame(1), fcLo = 0x88, fcHi = 0x02 or 0x08,
+                addr1 = staMac, addr2 = apMac, withFcs = true))
+        }
+        val rep = run(pcap.bytes())
+
+        assertEquals(6, rep.eapolFrames)
+        assertEquals(6, rep.eapolFromAp)
+        assertEquals(0, rep.eapolFromClient)
+        assertEquals(6, rep.eapolRetried)
+        assertEquals(0, rep.pairs)
+        assertTrue("the notes must say the client never transmitted: ${rep.notes}",
+            rep.notes.any { it.contains("not one was sent by a client") })
+        assertTrue("and name the retransmissions: ${rep.notes}", rep.notes.any { it.contains("Retry bit set") })
+    }
+
+    @Test
+    fun oneClientFrameTurnsOffTheClientSilenceNote() {
+        val pcap = PcapBuilder()
+        pcap.frame(beacon(ssid))
+        pcap.frame(dataEapol(m4Frame(1), fcLo = 0x88, fcHi = 0x01, addr1 = apMac, addr2 = staMac, withFcs = true))
+        pcap.frame(dataEapol(m4Frame(1), fcLo = 0x88, fcHi = 0x02, addr1 = staMac, addr2 = apMac, withFcs = true))
+        val rep = run(pcap.bytes())
+
+        assertEquals(1, rep.eapolFromClient)
+        assertEquals(1, rep.eapolFromAp)
+        assertTrue("a client did speak here, so the note would be wrong: ${rep.notes}",
+            rep.notes.none { it.contains("not one was sent by a client") })
     }
 }
