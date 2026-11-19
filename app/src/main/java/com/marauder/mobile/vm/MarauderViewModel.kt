@@ -8,6 +8,7 @@ import com.marauder.mobile.capture.CaptureSink
 import com.marauder.mobile.data.AnalyzerKind
 import com.marauder.mobile.data.ArtifactRecord
 import com.marauder.mobile.data.ArtifactsRepository
+import com.marauder.mobile.data.BoardRadio
 import com.marauder.mobile.data.BoardSetting
 import com.marauder.mobile.data.CaptureOps
 import com.marauder.mobile.data.GpxAssembler
@@ -632,6 +633,106 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    // --- Board radio state (`channel`, plain text) -----------------------------
+
+    private val _boardChannel = MutableStateFlow<Int?>(null)
+
+    /**
+     * The channel the board says it is on, taken from the board's own `channel` answer: the
+     * firmware prints the number it has set and nothing else (`CommandLine.cpp:658-668`).
+     * Null until it has been read. Together with [boardChanHop] this is the whole honest answer
+     * to "why is the list empty": a board whose hop is off hears this channel and nothing else,
+     * so a run aimed at channel 6 on a board sitting on 7 collects beacons of the wrong network
+     * and looks like an empty night.
+     */
+    val boardChannel: StateFlow<Int?> = _boardChannel.asStateFlow()
+
+    private var channelSink: StringBuilder? = null
+    private var channelArmed = false
+    private var channelTimeout: Job? = null
+
+    /** How many channel answers have been read; lets [awaitBoardChannelRead] spot a fresh one. */
+    private var channelReadCount = 0
+
+    /** Ask the board which channel it is on; the answer lands in [boardChannel]. */
+    fun requestBoardChannel() {
+        if (usb.status.value != UsbSerialManager.Status.CONNECTED) return
+        channelArmed = false
+        channelSink = StringBuilder()
+        runCommand(FirmwareCommands.currentChannel())
+        // The answer is a bare number with no end marker, so a JSON command follows it as one:
+        // its `@J` line closes the reply, exactly like the settings read.
+        usb.send(FirmwareCommands.JSON_STATUS)
+        channelTimeout?.cancel()
+        channelTimeout = viewModelScope.launch {
+            delay(CHANNEL_READ_MS)
+            finishChannelCapture(timeout = true)
+        }
+    }
+
+    /**
+     * Feed one device line to a running `channel` read. True means the line belongs to the
+     * reply and is not shown as ordinary console output.
+     */
+    private fun feedChannelCapture(line: String): Boolean {
+        val sink = channelSink ?: return false
+        if (line.startsWith("#")) {
+            // Arm on the firmware's own echo of the bare probe only: `#channel -s 7` is a write,
+            // and its answer is about the channel the board just moved to, not where it was.
+            val echoed = line.removePrefix("#").trim()
+            if (!channelArmed && echoed == FirmwareCommands.CHANNEL) channelArmed = true
+            else if (channelArmed) finishChannelCapture(timeout = false)
+            return channelArmed
+        }
+        if (!channelArmed) return false
+        sink.appendLine(line)
+        return true
+    }
+
+    private fun finishChannelCapture(timeout: Boolean) {
+        val sink = channelSink
+        channelSink = null
+        channelArmed = false
+        channelTimeout?.cancel()
+        channelTimeout = null
+        val read = BoardRadio.parseChannelAnswer(sink?.toString().orEmpty())
+        if (read == null) {
+            appendConsole(
+                if (timeout) "The board did not answer the channel request — where its radio sits is unknown"
+                else "The board's channel answer was not a channel number — where its radio sits is unknown",
+                LineKind.SYSTEM,
+            )
+            return
+        }
+        val previous = _boardChannel.value
+        _boardChannel.value = read
+        channelReadCount++
+        // The reply's own lines are swallowed from the console, so say what was read out of them:
+        // the claim becomes something the user can see rather than something to take on faith.
+        appendConsole(
+            "board answers `channel`: $read" +
+                (if (previous != null && previous != read) " — it moved (was $previous)" else ""),
+            LineKind.SYSTEM,
+        )
+    }
+
+    /**
+     * Ask for the board's channel and wait for the answer. Returns the value read, or null when the
+     * board did not answer. [channelReadCount] is what distinguishes a fresh answer from the value
+     * left over from the previous read — without it, a board that was already on the requested
+     * channel would look like it never replied.
+     */
+    private suspend fun awaitBoardChannelRead(): Int? {
+        val before = channelReadCount
+        requestBoardChannel()
+        val deadline = System.currentTimeMillis() + CHANNEL_READ_MS + 1200
+        while (System.currentTimeMillis() < deadline) {
+            delay(120)
+            if (channelReadCount > before) return _boardChannel.value
+        }
+        return if (channelReadCount > before) _boardChannel.value else null
+    }
+
     /** Run [command] and keep its live view fed: poll status (and its list, if any)
      *  every ~1.3 s while it runs so counters and rows update in real time.
      *
@@ -706,6 +807,22 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
         appendConsole("> $trimmed", LineKind.INPUT)
         usb.send(if (capturing) "$trimmed -serial" else trimmed)
 
+        // Where the radio ended up, proven by the board's own answer rather than by the command the
+        // app sent. Only worth asking when the hop is off: a hopping board is somewhere else every
+        // 2 s by design, and then a different channel in the answer means nothing.
+        val askedFor = CaptureOps.pinnedChannel(trimmed)
+        if (askedFor > 0 && (hopDisabled || _boardChanHop.value == false)) {
+            viewModelScope.launch {
+                delay(1800)
+                val read = awaitBoardChannelRead()
+                if (read != null && read != askedFor) appendConsole(
+                    "⚠ the board reports channel $read although this run asked for $askedFor — what it captures " +
+                        "is another channel's traffic",
+                    LineKind.SYSTEM,
+                )
+            }
+        }
+
         list?.let {
             bufferFor(it).clear()
             _listLoading.value = it
@@ -733,26 +850,41 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
      * has one channel-setting verb — `channel -s <n>` — and the hop loop of these modes is
      * gated by `ChanHop`, so the two together hold the channel.
      *
-     * The board's own reply is what proves it: `channel` prints the channel it has set, and
-     * that line lands in the console the screen is showing. The app does not claim the pin
-     * on its own authority.
+     * The pin is then proved by reading the board back: `channel` with no arguments prints the
+     * channel the board has set, so the app compares that answer with what it asked for instead of
+     * claiming the pin on its own authority. A board that answers something else is reported as not
+     * held — an unproven pin is the difference between "nobody is here" and "we were not here".
      */
-    private fun prepareChannelPin(channel: Int) {
+    private suspend fun prepareChannelPin(channel: Int) {
         if (usb.status.value != UsbSerialManager.Status.CONNECTED) return
-        if (!hopDisabled && boardChanHop != false) {
+        if (!hopDisabled && _boardChanHop.value != false) {
             runCommand(FirmwareCommands.settingsSet("ChanHop", false))
             hopDisabled = true
         }
         runCommand(FirmwareCommands.channelSet(channel))
-        appendConsole(
-            if (hopDisabled)
-                "Channel held for this run: the board answers `channel -s $channel` with the channel it set, " +
-                    "and the hop is off while it runs (it is restored to the value the board reported when you leave)."
-            else
-                "Channel held for this run: the board answers `channel -s $channel` with the channel it set, " +
-                    "and its own settings already keep the hop off, so nothing about the board was changed.",
-            LineKind.SYSTEM,
-        )
+        // Read the board back instead of trusting the write: if its radio refused to move, a run that
+        // "holds channel 6" collects another channel's traffic and looks like an empty night.
+        val read = awaitBoardChannelRead()
+        val hopLine = if (hopDisabled)
+            "the hop is off while it runs (restored to the value the board reported when you leave)"
+        else
+            "the board's own settings already keep the hop off, so nothing about the board was changed"
+        when (read) {
+            channel -> appendConsole(
+                "Channel held for this run: the board reports channel $read on its own, and $hopLine.",
+                LineKind.SYSTEM,
+            )
+            null -> appendConsole(
+                "⚠ Channel set to $channel, but the board did not answer the read-back, so where its radio sits " +
+                    "is unproven. $hopLine.",
+                LineKind.SYSTEM,
+            )
+            else -> appendConsole(
+                "⚠ not held: the board was set to channel $channel and answers `channel` with $read — what this " +
+                    "run captures is another channel's traffic. $hopLine.",
+                LineKind.SYSTEM,
+            )
+        }
     }
 
     /** The board's `ChanHop` setting is off because this app turned it off. */
@@ -763,7 +895,8 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
      * dump has been read. [restoreHopping] goes back to this, so the app never leaves a board
      * hopping when its owner had it parked on one channel — nor parked when they had it free.
      */
-    private var boardChanHop: Boolean? = null
+    private val _boardChanHop = MutableStateFlow<Boolean?>(null)
+    val boardChanHop: StateFlow<Boolean?> = _boardChanHop.asStateFlow()
 
     /**
      * Record what the board says about its own hopping, and say it out loud when the answer is
@@ -772,8 +905,8 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
      */
     private fun noteChanHopAsRead(settings: List<BoardSetting>) {
         val hop = settings.firstOrNull { it.name.equals("ChanHop", ignoreCase = true) } ?: return
-        val previous = boardChanHop
-        boardChanHop = hop.enabled
+        val previous = _boardChanHop.value
+        _boardChanHop.value = hop.enabled
         if (previous == hop.enabled) return
         if (!hop.enabled && !hopDisabled) {
             appendConsole(
@@ -805,7 +938,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     private suspend fun prepareEapolSniff(command: String): Boolean {
         if (usb.status.value != UsbSerialManager.Status.CONNECTED) return false
 
-        if (CaptureOps.needsHopOff(command) && !hopDisabled && boardChanHop != false) {
+        if (CaptureOps.needsHopOff(command) && !hopDisabled && _boardChanHop.value != false) {
             runCommand(FirmwareCommands.settingsSet("ChanHop", false))
             hopDisabled = true
             appendConsole(
@@ -2024,7 +2157,12 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     private fun onLine(line: String) {
         when (val parsed = LineParser.parse(line)) {
             is ParsedLine.Console -> if (parsed.raw.isNotBlank()) {
-                if (feedSettingsCapture(parsed.raw)) return
+                // Both plain-text reads (settings dump, channel answer) collect their own lines;
+                // either may consume a line, and the channel probe still has to see the echo that
+                // closes a settings read, so both get fed before either can swallow it.
+                val settingsLine = feedSettingsCapture(parsed.raw)
+                val channelLine = feedChannelCapture(parsed.raw)
+                if (settingsLine || channelLine) return
                 onConsoleLine(parsed.raw)
                 appendConsole(parsed.raw, LineKind.OUTPUT)
             }
@@ -2035,6 +2173,7 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
                 // unrelated structured answer (the live status poll) must not end the read —
                 // the timeout is what reports a read that never produced anything.
                 if (settingsSink != null && settingsSink!!.isNotEmpty()) finishSettingsCapture(timeout = false)
+                if (channelSink != null && channelSink!!.isNotEmpty()) finishChannelCapture(timeout = false)
                 handleMessage(parsed.message)
             }
         }
@@ -2186,6 +2325,17 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
             usb.send("jsoninfo")
             delay(200)
             usb.send("jsonstatus")
+            // Ask the board what its radio is doing, in the board's own words, before anything is
+            // aimed at a channel. Both facts are states the app did not choose: `ChanHop` is a
+            // switch in the board's flash, and the channel is wherever the last session left it.
+            // A field run of `sniffpmkid -c 6` against a board sitting on 7 produced 358 KB of other
+            // networks' beacons and not one usable frame, and nothing on the console ever said so.
+            launch {
+                delay(600)
+                requestBoardSettings()
+                delay(SETTINGS_READ_MS + 400)
+                if (usb.status.value == UsbSerialManager.Status.CONNECTED) requestBoardChannel()
+            }
             while (isActive && usb.status.value == UsbSerialManager.Status.CONNECTED) {
                 delay(2500)
                 usb.send("jsonstatus")
@@ -2196,6 +2346,14 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     private fun onDisconnected() {
         _info.value = null
         _deviceStatus.value = null
+        // The board's radio state was what it reported over this link; without the link there is
+        // nothing to report it, so the app stops claiming to know it.
+        _boardChannel.value = null
+        _boardChanHop.value = null
+        channelSink = null
+        channelArmed = false
+        channelTimeout?.cancel()
+        channelTimeout = null
         _aps.value = emptyList()
         _stations.value = emptyList()
         ledger.clear()
@@ -2282,6 +2440,9 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
 
         /** How long a `settings` dump may take to arrive before the read is called failed. */
         private const val SETTINGS_READ_MS = 2500L
+
+        /** How long the board's one-line `channel` answer may take before the read is called failed. */
+        private const val CHANNEL_READ_MS = 1500L
 
         /** Selection attempts before refusing a targeted action. */
         private const val PIN_MAX_ATTEMPTS = 3

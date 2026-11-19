@@ -116,6 +116,8 @@ fun HomeScreen(
     val name by vm.connectedName.collectAsState()
     val devStatus by vm.deviceStatus.collectAsState()
     val info by vm.info.collectAsState()
+    val boardChannel by vm.boardChannel.collectAsState()
+    val boardHop by vm.boardChanHop.collectAsState()
     val mission by vm.activeMission.collectAsState()
     val darkTheme by vm.darkTheme.collectAsState()
     val connected = connStatus == UsbSerialManager.Status.CONNECTED
@@ -231,6 +233,8 @@ fun HomeScreen(
             item {
                 BoardCard(
                     info = info,
+                    channel = boardChannel,
+                    chanHop = boardHop,
                     onOpenFlash = onOpenFlash,
                     onReboot = { vm.runCommand("reboot") },
                 )
@@ -344,7 +348,13 @@ private fun MissionCard(mission: Mission, onOpen: () -> Unit, onStop: () -> Unit
 
 /** Firmware identity + capability report, plus the two board-level actions. */
 @Composable
-private fun BoardCard(info: DeviceMessage.Info?, onOpenFlash: () -> Unit, onReboot: () -> Unit) {
+private fun BoardCard(
+    info: DeviceMessage.Info?,
+    channel: Int?,
+    chanHop: Boolean?,
+    onOpenFlash: () -> Unit,
+    onReboot: () -> Unit,
+) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -384,6 +394,23 @@ private fun BoardCard(info: DeviceMessage.Info?, onOpenFlash: () -> Unit, onRebo
                     }
                 }
             }
+            // Where the radio actually is, in the board's own words. A board whose hop is off hears
+            // one channel and nothing else, which is the difference between "nobody is on channel 6"
+            // and "this board is sitting on 7" — and an empty list looks exactly like the first one.
+            Text(
+                when {
+                    channel == null -> "radio: the board has not said where its radio sits yet"
+                    chanHop == false ->
+                        "radio: sitting on channel $channel and its own ChanHop setting is off — it hears " +
+                            "channel $channel and nothing else. A network on another channel cannot be seen, " +
+                            "listed or picked from here."
+                    chanHop == true -> "radio: channel $channel, and the board's own ChanHop walks the channels"
+                    else -> "radio: channel $channel, hopping unknown"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                color = if (channel != null && chanHop == false) Warning else MarauderTextDim,
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ActionTile("Flash firmware", Icons.Filled.SystemUpdate, CatDevice, onClick = onOpenFlash)
                 ActionTile("Reboot", Icons.Filled.RestartAlt, CatDevice, onClick = onReboot)

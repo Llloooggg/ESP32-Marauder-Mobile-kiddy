@@ -144,6 +144,20 @@ is plugged in.
   written with `settings -s <key> enable|disable`; only boolean settings are editable,
   because that is all the CLI accepts, and every write is followed by a fresh read, so
   a change the board did not apply is reported as failed.
+- 📻 **The board's radio state is read, never assumed** — the channel the board sits on comes from
+  its own `channel` answer and `ChanHop` comes from its settings dump, both requested when a board
+  is connected and written on the Home screen in one sentence. A pin is checked the same way it was
+  made: after `channel -s <n>` the app reads the channel back and says "not held" when the board
+  answers something else. That is the difference between "nobody is on channel 6" and "this board
+  was parked on 7" — a difference that otherwise shows up only afterwards, as a 350 KB pcap full of
+  another network's beacons.
+- 📡 **EAPOL counted by who transmitted it** — a capture holding 246 EAPOL frames and 0 handshakes
+  gets an explanation instead of a wordlist run: the extractor counts EAPOL from the access-point
+  side and from the client side, plus how many carried the Retry bit, so "every one came from the
+  AP and the client never answered" is stated as the fact it is. An EAPOL frame sent by an AP with
+  no ANonce and no key data is its own class rather than an M4, because an M4 is by definition a
+  client frame — and two engines that disagree about a label are worse than one that says it does
+  not know.
 - 🔐 **WPA3-aware, honestly** — SAE-only networks are detected and reported as
   uncrackable by design (their PMK is not PBKDF2-derived) rather than burned
   through a wordlist.
