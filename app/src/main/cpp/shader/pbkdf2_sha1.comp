@@ -1,0 +1,286 @@
+#version 450
+
+// PBKDF2-HMAC-SHA1 for WPA2-PSK (hashcat mode 22000), as a Vulkan compute shader.
+//
+// One invocation derives one 32-byte PMK for one (candidate password, ESSID salt) pair,
+// which is the whole cost of a WPA2 guess: 4096 HMAC-SHA1 rounds, twice over, because WPA
+// takes PBKDF2's first 32 bytes. The MIC/PMKID comparison afterwards stays on the CPU, in
+// the same `verify_with_pmk` the CPU engine uses, so the two backends cannot disagree about
+// what a match means — they differ only in where the 4096 rounds run.
+//
+// Word convention for every input buffer: each uint is one SHA-1 message word — the entry's
+// four bytes packed most-significant-byte-first — written by the host as a native uint32.
+// That makes a SHA-1 message word BE a buffer word, which is why the hot path copies words
+// rather than bytes. Buffer offsets are always multiples of four and the accompanying length
+// says how many trailing bytes are real; the bytes past the length are zero padding owned by
+// the host (in the low part of the last word, which is where "most significant byte first"
+// leaves room). Getting this convention wrong on either side does not produce garbage that
+// looks like garbage: it produces a perfectly formed wrong PMK, which is why the host test
+// and the device self-test both compare against published values.
+//
+// What the shader deliberately does NOT do: decide whether a PMK is correct (the CPU does
+// that, against material the app parsed), or guess at inputs it was not given. Out-of-range
+// invocations return without writing, and the host validates candidate and salt lengths
+// before dispatching.
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) restrict readonly buffer WordBytes {
+    uint data[];
+} bufWords;
+
+// x: byte offset into WordBytes (multiple of 4), y: byte length
+layout(set = 0, binding = 1) restrict readonly buffer WordTable {
+    uvec2 range[];
+} bufWordTable;
+
+layout(set = 0, binding = 2) restrict readonly buffer SaltBytes {
+    uint data[];
+} bufSalts;
+
+// x: byte offset into SaltBytes (multiple of 4), y: byte length (at most 32, checked by the
+// host: an ESSID is at most 32 octets, which is what the 22000 salt field can hold)
+layout(set = 0, binding = 3) restrict readonly buffer SaltTable {
+    uvec2 range[];
+} bufSaltTable;
+
+// Eight words (the 32-byte PMK, same word convention as the inputs) per (word, salt) pair,
+// in pair order.
+layout(set = 0, binding = 4) writeonly buffer PmkOut {
+    uint pmk[];
+} bufOut;
+
+layout(push_constant) uniform Push {
+    uint iterations;    // 4096 for WPA2-PSK
+    uint saltCount;     // pairCount = wordCount * saltCount
+    uint pairCount;
+} pcfg;
+
+// --- SHA-1 (FIPS 180-4) ---------------------------------------------------------------
+//
+// Written the way the CPU core writes it and pinned to the same evidence: the GPU self-test
+// derives hashcat's published PMKID vector here, and the host compares the result against
+// the published tag. A shader is only ever run on whatever driver the phone happens to have,
+// so that check is not optional.
+
+uint rol(uint v, uint n) {
+    return (v << n) | (v >> (32u - n));
+}
+
+void sha1Init(out uint h[5]) {
+    h[0] = 0x67452301u;
+    h[1] = 0xefcdab89u;
+    h[2] = 0x98badcfeu;
+    h[3] = 0x10325476u;
+    h[4] = 0xc3d2e1f0u;
+}
+
+void sha1Compress(inout uint h[5], const uint blk[16]) {
+    uint w[80];
+    for (int i = 0; i < 16; i++) w[i] = blk[i];
+    for (int i = 16; i < 80; i++) w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1u);
+
+    uint a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
+    for (int i = 0; i < 80; i++) {
+        uint f, k;
+        if (i < 20)      { f = (b & c) | ((~b) & d);         k = 0x5a827999u; }
+        else if (i < 40) { f = b ^ c ^ d;                    k = 0x6ed9eba1u; }
+        else if (i < 60) { f = (b & c) | (b & d) | (c & d);  k = 0x8f1bbcdcu; }
+        else             { f = b ^ c ^ d;                    k = 0xca62c1d6u; }
+        const uint t = rol(a, 5u) + f + e + k + w[i];
+        e = d;
+        d = c;
+        c = rol(b, 30u);
+        b = a;
+        a = t;
+    }
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e;
+}
+
+/** Writes one byte into a big-endian-packed 64-byte block. */
+void setByte(inout uint words[16], uint byteOffset, uint value) {
+    const uint w = byteOffset >> 2u;
+    const uint sh = 8u * (3u - (byteOffset & 3u));
+    words[w] = (words[w] & ~(0xFFu << sh)) | ((value & 0xFFu) << sh);
+}
+
+/**
+ * SHA-1 of an arbitrary byte range of WordBytes, used only when a candidate is longer than
+ * the HMAC block size and RFC 2104 says hash the key first. Kept general — multi-block
+ * messages and both padding cases — because a mistake here would only show up as a wrong
+ * PMK for long wordlist lines, which is exactly the kind of thing that must not be quietly
+ * wrong.
+ */
+void sha1OfWordBytes(uint byteBase, uint byteLen, out uint digest[5]) {
+    sha1Init(digest);
+    const uint base = byteBase >> 2u;
+    const uint fullBlocks = byteLen / 64u;
+    for (uint b = 0; b < fullBlocks; b++) {
+        uint blk[16];
+        for (int i = 0; i < 16; i++) blk[i] = bufWords.data[base + b * 16u + uint(i)];
+        sha1Compress(digest, blk);
+    }
+
+    const uint rem = byteLen - fullBlocks * 64u;
+    uint blk[16];
+    uint blk2[16];
+    for (int i = 0; i < 16; i++) { blk[i] = 0u; blk2[i] = 0u; }
+    for (uint i = 0; i < rem; i++) {
+        const uint src = bufWords.data[base + (i >> 2u)];
+        setByte(blk, i, (src >> (8u * (3u - (i & 3u)))) & 0xFFu);
+    }
+    setByte(blk, rem, 0x80u);
+
+    const uint bitsHi = byteLen >> 29u;
+    const uint bitsLo = byteLen << 3u;
+    if (rem >= 56u) {
+        blk2[14] = bitsHi;
+        blk2[15] = bitsLo;
+        sha1Compress(digest, blk);
+        sha1Compress(digest, blk2);
+    } else {
+        blk[14] = bitsHi;
+        blk[15] = bitsLo;
+        sha1Compress(digest, blk);
+    }
+}
+
+// --- one (password, salt) pair -------------------------------------------------------
+
+void main() {
+    const uint pair = gl_GlobalInvocationID.x;
+    if (pair >= pcfg.pairCount) return;
+
+    const uint wordIndex = pair / pcfg.saltCount;
+    const uint saltIndex = pair % pcfg.saltCount;
+
+    const uvec2 wr = bufWordTable.range[wordIndex];
+    const uvec2 sr = bufSaltTable.range[saltIndex];
+
+    const uint pwBase = wr.x >> 2u;
+    const uint pwLen = wr.y;
+    const uint saltBase = sr.x >> 2u;
+    const uint saltLen = sr.y;
+
+    // ---- HMAC key block: the password, hashed first if longer than 64 bytes ---------
+    uint key[16];
+    for (int i = 0; i < 16; i++) key[i] = 0u;
+    if (pwLen <= 64u) {
+        const uint whole = pwLen >> 2u;
+        for (uint i = 0; i < whole; i++) key[i] = bufWords.data[pwBase + i];
+        for (uint i = whole * 4u; i < pwLen; i++) {
+            const uint src = bufWords.data[pwBase + (i >> 2u)];
+            setByte(key, i, (src >> (8u * (3u - (i & 3u)))) & 0xFFu);
+        }
+    } else {
+        uint hashed[5];
+        sha1OfWordBytes(wr.x, pwLen, hashed);
+        for (int i = 0; i < 5; i++) key[i] = hashed[i];
+        // The other 44 bytes stay zero, which is what RFC 2104 asks for.
+    }
+
+    // The first SHA-1 block of every HMAC here is ipad (or opad), and for this pair it never
+    // changes, so its output state is computed once and copied into for all 8192 compressions
+    // instead of being recomputed. That halves the work per guess — which is the entire point
+    // of a GPU path — and it is why the self-test has to check a published vector rather than
+    // trust the optimisation.
+    uint ipadBlock[16], opadBlock[16];
+    for (int i = 0; i < 16; i++) {
+        ipadBlock[i] = key[i] ^ 0x36363636u;
+        opadBlock[i] = key[i] ^ 0x5c5c5c5cu;
+    }
+    uint stateIpad[5], stateOpad[5];
+    sha1Init(stateIpad);
+    sha1Init(stateOpad);
+    sha1Compress(stateIpad, ipadBlock);
+    sha1Compress(stateOpad, opadBlock);
+
+    // ---- inner message block for round one: salt || INT(c), padding, bit length -----
+    //
+    // saltLen <= 32 is enforced by the host before it dispatches, so the salt is at most
+    // eight words and the counter and the length field always fit in this block.
+    uint tail[16];
+    for (int i = 0; i < 16; i++) tail[i] = 0u;
+    const uint saltWhole = saltLen >> 2u;
+    for (uint i = 0; i < saltWhole; i++) tail[i] = bufSalts.data[saltBase + i];
+    for (uint i = saltWhole * 4u; i < saltLen; i++) {
+        const uint src = bufSalts.data[saltBase + (i >> 2u)];
+        setByte(tail, i, (src >> (8u * (3u - (i & 3u)))) & 0xFFu);
+    }
+    setByte(tail, saltLen + 4u, 0x80u);
+    tail[14] = 0u;
+    tail[15] = (64u + saltLen + 4u) * 8u;
+
+    // ---- outer message block: the inner digest (20 bytes), padding, bit length ------
+    uint outer[16];
+    for (int i = 0; i < 16; i++) outer[i] = 0u;
+    outer[5] = 0x80000000u;
+    outer[14] = 0u;
+    outer[15] = (64u + 20u) * 8u;
+
+    // ---- PBKDF2 ---------------------------------------------------------------------
+    //
+    // WPA2 needs PBKDF2's blocks c = 1 and c = 2, each `iterations` rounds deep, and the PMK
+    // is the first 32 bytes of their concatenation.
+    //
+    // Round one is the only round whose message contains the salt and the block counter, so
+    // it is done explicitly for c = 1 and c = 2. From round two on the message is just the
+    // previous U: 20 bytes, word aligned, so its tail block has a fixed shape and the loop
+    // body contains no byte arithmetic at all.
+    uint u1[5], u2[5], h[5];
+
+    // c = 1: message = salt || 00 00 00 01
+    setByte(tail, saltLen + 2u, 0x00u);
+    setByte(tail, saltLen + 3u, 0x01u);
+    for (int k = 0; k < 5; k++) h[k] = stateIpad[k];
+    sha1Compress(h, tail);
+    for (int k = 0; k < 5; k++) outer[k] = h[k];
+    for (int k = 0; k < 5; k++) h[k] = stateOpad[k];
+    sha1Compress(h, outer);
+    for (int k = 0; k < 5; k++) u1[k] = h[k];
+
+    // c = 2: the same block with the last counter byte changed
+    setByte(tail, saltLen + 3u, 0x02u);
+    for (int k = 0; k < 5; k++) h[k] = stateIpad[k];
+    sha1Compress(h, tail);
+    for (int k = 0; k < 5; k++) outer[k] = h[k];
+    for (int k = 0; k < 5; k++) h[k] = stateOpad[k];
+    sha1Compress(h, outer);
+    for (int k = 0; k < 5; k++) u2[k] = h[k];
+
+    uint t1[5], t2[5];
+    for (int k = 0; k < 5; k++) { t1[k] = u1[k]; t2[k] = u2[k]; }
+
+    uint innerTail[16];
+    for (int k = 0; k < 16; k++) innerTail[k] = 0u;
+    innerTail[5] = 0x80000000u;
+    innerTail[15] = (64u + 20u) * 8u;
+
+    for (uint round = 2; round <= pcfg.iterations; round++) {
+        for (int k = 0; k < 5; k++) innerTail[k] = u1[k];
+        for (int k = 0; k < 5; k++) h[k] = stateIpad[k];
+        sha1Compress(h, innerTail);
+        for (int k = 0; k < 5; k++) outer[k] = h[k];
+        for (int k = 0; k < 5; k++) h[k] = stateOpad[k];
+        sha1Compress(h, outer);
+        for (int k = 0; k < 5; k++) u1[k] = h[k];
+        for (int k = 0; k < 5; k++) t1[k] ^= h[k];
+
+        for (int k = 0; k < 5; k++) innerTail[k] = u2[k];
+        for (int k = 0; k < 5; k++) h[k] = stateIpad[k];
+        sha1Compress(h, innerTail);
+        for (int k = 0; k < 5; k++) outer[k] = h[k];
+        for (int k = 0; k < 5; k++) h[k] = stateOpad[k];
+        sha1Compress(h, outer);
+        for (int k = 0; k < 5; k++) u2[k] = h[k];
+        for (int k = 0; k < 5; k++) t2[k] ^= h[k];
+    }
+
+    // The first 32 bytes of the 40-byte PBKDF2 output: all of block 1 (five words) and the
+    // first twelve bytes of block 2 (three words). No masking: 5 + 3 words is exactly 32
+    // bytes, and an earlier version masked the last word here on the mistaken assumption
+    // that twelve bytes ended mid-word - which cost one PMK byte on every guess.
+    const uint out0 = pair * 8u;
+    for (int k = 0; k < 5; k++) bufOut.pmk[out0 + uint(k)] = t1[k];
+    for (int k = 0; k < 3; k++) bufOut.pmk[out0 + 5u + uint(k)] = t2[k];
+}

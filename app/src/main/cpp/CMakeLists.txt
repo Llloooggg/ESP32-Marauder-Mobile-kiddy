@@ -18,6 +18,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_library(marauder_crypto SHARED
         wpa_crypto.cpp
         selftest.cpp
+        vulkan_engine.cpp
         jni_bridge.cpp)
 
 target_compile_options(marauder_crypto PRIVATE -Wall -Wextra)
@@ -28,3 +29,19 @@ target_compile_options(marauder_crypto PRIVATE -Wall -Wextra)
 # workers, which the code copes with but which nobody should discover by accident.
 find_package(Threads REQUIRED)
 target_link_libraries(marauder_crypto PRIVATE Threads::Threads)
+
+# Vulkan. On Android this links against the NDK's libvulkan stub, which resolves to the
+# system driver at run time, so building it in costs nothing on a device that has no
+# Vulkan - the engine asks the loader at run time and the app refuses the GPU backend when
+# the answer is no (see NativeCrypto.gpuUnavailableReason and mkgpu::self_test).
+if (ANDROID)
+    find_library(VULKAN_LIB vulkan)
+    if (NOT VULKAN_LIB)
+        message(FATAL_ERROR "the NDK sysroot provides libvulkan; cannot find it, so the GPU engine cannot link")
+    endif()
+    target_link_libraries(marauder_crypto PRIVATE ${VULKAN_LIB})
+endif()
+
+# gpu_host_test.cpp is deliberately NOT part of this target: it is a host program for a
+# development machine (see its header comment for the g++ command) and it has no main
+# without -DMK_GPU_HOST_TEST.

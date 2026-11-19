@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "wpa_crypto.h"
+#include "vulkan_engine.h"
 
 namespace mktest {
 bool self_test(std::string& fail);
@@ -54,6 +55,24 @@ bool getBytes(JNIEnv* env, jbyteArray array, std::vector<uint8_t>& out) {
     // JNI_ABORT: this is read-only input, nothing to copy back.
     env->ReleaseByteArrayElements(array, raw, JNI_ABORT);
     return true;
+}
+
+/**
+ * (word, target) pairs as one flat int[]: [w0, t0, w1, t1, ...]. Both back ends return this,
+ * so the Kotlin side has one result shape rather than two.
+ */
+jintArray pairsToJni(JNIEnv* env, const std::vector<std::pair<int, int>>& found) {
+    jintArray out = env->NewIntArray(int(found.size()) * 2);
+    if (out == nullptr) return nullptr;   // allocation failure: JNI already reports it
+    if (!found.empty()) {
+        std::vector<jint> flat(found.size() * 2);
+        for (size_t i = 0; i < found.size(); i++) {
+            flat[2 * i] = jint(found[i].first);
+            flat[2 * i + 1] = jint(found[i].second);
+        }
+        env->SetIntArrayRegion(out, 0, int(flat.size()), flat.data());
+    }
+    return out;
 }
 
 }  // namespace
@@ -100,17 +119,64 @@ Java_com_marauder_mobile_crack_NativeCrypto_nativeCrackBatch(
         return nullptr;
     }
 
-    jintArray out = env->NewIntArray(int(found.size()) * 2);
-    if (out == nullptr) return nullptr;   // allocation failure: JNI already reports it
-    if (!found.empty()) {
-        std::vector<jint> flat(found.size() * 2);
-        for (size_t i = 0; i < found.size(); i++) {
-            flat[2 * i] = jint(found[i].first);
-            flat[2 * i + 1] = jint(found[i].second);
-        }
-        env->SetIntArrayRegion(out, 0, int(flat.size()), flat.data());
+    return pairsToJni(env, found);
+}
+
+/**
+ * Vulkan availability in two cheap calls, both backed by one cached probe in the engine:
+ * the compute device's name ("" when there is no usable one) and the reason there is none.
+ *
+ * The expensive gate - running the published vectors through this driver - is a separate
+ * call the Kotlin side makes inside a GPU run, on a worker thread, because it is real GPU
+ * work and should not delay starting the app.
+ */
+JNIEXPORT jstring JNICALL
+Java_com_marauder_mobile_crack_NativeCrypto_nativeGpuDeviceName(JNIEnv* env, jobject) {
+    return env->NewStringUTF(mkgpu::deviceName().c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_marauder_mobile_crack_NativeCrypto_nativeGpuUnavailableReason(JNIEnv* env, jobject) {
+    std::string reason;
+    if (mkgpu::available(reason)) return env->NewStringUTF("");
+    return env->NewStringUTF(reason.c_str());
+}
+
+/** "" when the GPU reproduces the published vectors on this driver; otherwise what failed. */
+JNIEXPORT jstring JNICALL
+Java_com_marauder_mobile_crack_NativeCrypto_nativeGpuSelfTest(JNIEnv* env, jobject) {
+    std::string fail;
+    if (mkgpu::self_test(fail)) return env->NewStringUTF("");
+    return env->NewStringUTF(fail.c_str());
+}
+
+/**
+ * One GPU batch: the 4096-round PBKDF2 per candidate on the graphics device, the MIC/PMKID
+ * comparison on the CPU with the same `verify_with_pmk` the CPU engine uses.
+ *
+ * Same input buffers and same (word, target) pair contract as nativeCrackBatch on purpose:
+ * the two back ends must not be able to disagree about a hash, so they do not get to differ
+ * about anything except where the hashing runs.
+ */
+JNIEXPORT jintArray JNICALL
+Java_com_marauder_mobile_crack_NativeCrypto_nativeGpuCrackBatch(
+        JNIEnv* env, jobject, jbyteArray materialBlob, jbyteArray packedWords) {
+
+    std::vector<uint8_t> material;
+    std::vector<uint8_t> words;
+    if (!getBytes(env, materialBlob, material) || !getBytes(env, packedWords, words)) {
+        throwIse(env, "GPU engine: could not read the batch buffers from the JVM");
+        return nullptr;
     }
-    return out;
+
+    std::vector<std::pair<int, int>> found;
+    std::string err;
+    if (!mkgpu::crack_batch_gpu(material.data(), material.size(), words.data(), words.size(),
+                                found, err)) {
+        throwIse(env, "GPU engine: " + err);
+        return nullptr;
+    }
+    return pairsToJni(env, found);
 }
 
 }  // extern "C"

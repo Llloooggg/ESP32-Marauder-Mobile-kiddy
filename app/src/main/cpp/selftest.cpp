@@ -15,10 +15,10 @@
 //   g++ -std=c++17 -O2 -pthread -DMK_SELFTEST_MAIN wpa_crypto.cpp selftest.cpp -o selftest
 // `-pthread` is needed because the core spreads a batch over the machine's cores.
 #include "wpa_crypto.h"
+#include "mk_test_fixtures.h"
 
 #include <cstdio>
 #include <cstring>
-#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -33,213 +33,6 @@ namespace mktest {
 // consumer would, with no qualifications, so any name mismatch shows up here.
 using namespace mk;
 
-namespace {
-
-std::vector<uint8_t> unhex(const std::string& s) {
-    std::vector<uint8_t> out;
-    out.reserve(s.size() / 2);
-    for (size_t i = 0; i + 1 < s.size(); i += 2) {
-        out.push_back(static_cast<uint8_t>(std::stoi(s.substr(i, 2), nullptr, 16)));
-    }
-    return out;
-}
-
-std::string toHex(const uint8_t* p, size_t n) {
-    static const char* kDigits = "0123456789abcdef";
-    std::string s;
-    s.reserve(n * 2);
-    for (size_t i = 0; i < n; i++) {
-        s.push_back(kDigits[p[i] >> 4]);
-        s.push_back(kDigits[p[i] & 0xF]);
-    }
-    return s;
-}
-
-bool eqHex(const char* want, const uint8_t* got, size_t n, std::string& detail) {
-    const std::string hex = toHex(got, n);
-    if (hex == want) return true;
-    detail = std::string("want ") + want + ", got " + hex;
-    return false;
-}
-
-int cmpBytes(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
-    const size_t n = a.size() < b.size() ? a.size() : b.size();
-    for (size_t i = 0; i < n; i++) {
-        if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
-    }
-    return a.size() < b.size() ? -1 : (a.size() > b.size() ? 1 : 0);
-}
-
-/** Same pairwise-key-expansion buffers Kotlin's CrackCore builds. */
-void buildPkeSets(const std::vector<uint8_t>& aa, const std::vector<uint8_t>& spa,
-                  const std::vector<uint8_t>& anonce, const std::vector<uint8_t>& snonce,
-                  PkeSet& out) {
-    const bool apFirst = cmpBytes(aa, spa) <= 0;
-    const std::vector<uint8_t>& macLow = apFirst ? aa : spa;
-    const std::vector<uint8_t>& macHigh = apFirst ? spa : aa;
-    const bool anFirst = cmpBytes(anonce, snonce) <= 0;
-    const std::vector<uint8_t>& nonLow = anFirst ? anonce : snonce;
-    const std::vector<uint8_t>& nonHigh = anFirst ? snonce : anonce;
-
-    static const char kLabel[] = "Pairwise key expansion";   // 22 chars
-
-    out.p100.assign(100, 0);
-    std::memcpy(out.p100.data(), kLabel, 22);                 // label + NUL = 23 bytes
-    std::memcpy(out.p100.data() + 23, macLow.data(), 6);
-    std::memcpy(out.p100.data() + 29, macHigh.data(), 6);
-    std::memcpy(out.p100.data() + 35, nonLow.data(), 32);
-    std::memcpy(out.p100.data() + 67, nonHigh.data(), 32);
-
-    out.p102.assign(102, 0);
-    out.p102[0] = 1;
-    std::memcpy(out.p102.data() + 2, kLabel, 22);
-    std::memcpy(out.p102.data() + 24, macLow.data(), 6);
-    std::memcpy(out.p102.data() + 30, macHigh.data(), 6);
-    std::memcpy(out.p102.data() + 36, nonLow.data(), 32);
-    std::memcpy(out.p102.data() + 68, nonHigh.data(), 32);
-    out.p102[100] = 0x80;
-    out.p102[101] = 1;
-
-    out.pstd.assign(100, 0);
-    out.pstd[0] = 0;                                         // PRF-384 block counter
-    std::memcpy(out.pstd.data() + 1, kLabel, 22);
-    out.pstd[23] = 0;
-    std::memcpy(out.pstd.data() + 24, macLow.data(), 6);
-    std::memcpy(out.pstd.data() + 30, macHigh.data(), 6);
-    std::memcpy(out.pstd.data() + 36, nonLow.data(), 32);
-    std::memcpy(out.pstd.data() + 68, nonHigh.data(), 32);
-}
-
-// --- the two published vectors, named once -----------------------------------------
-//
-// Both the known-answer checks and the batch test below use these. Copying the
-// 242-character EAPOL literal into a second place is exactly how the two would drift
-// apart and quietly stop proving the same thing — it already gained nine stray zero
-// bytes once.
-
-// hashcat's mode-22000 PMKID self-test: essid "hashcat-essid", password "hashcat!".
-const char kPmkidEssid[] = "hashcat-essid";
-const char kPmkidPassword[] = "hashcat!";
-const char kPmkidAa[] = "fc690c158264";
-const char kPmkidSpa[] = "f4747f87f9f4";
-const char kPmkidTag[] = "4d4fe7aac3a2cecab195321ceb99a7d0";
-
-// hashcat's published example handshake: essid "TP-LINK_HASHCAT_TEST", password
-// "hashcat!", keyver 2. Its stored EAPOL-Key frame carries the supplicant nonce at
-// 17..49 and an empty standard KEY NONCE field at 49..81 — verified independently by
-// recomputing this line's MIC with the JDK's own PBKDF2/HMAC.
-const char kHsEssid[] = "TP-LINK_HASHCAT_TEST";
-const char kHsPassword[] = "hashcat!";
-const char kHsAa[] = "6466b38ec3fc";
-const char kHsSpa[] = "225edc49b7aa";
-const char kHsAnonce[] = "10e3be3b005a629e89de088d6a2fdc489db83ad4764f2d186b9cde15446e972e";
-const char kHsSnonce[] = "48ce2ccba9c1fda130ff2fbbfb4fd3b063d1a93920b0f7df54a5cbf787b16171";
-const char kHsEapol[] =
-    "0103007502010a0000000000000000000148ce2ccba9c1fda130ff2f"
-    "bbfb4fd3b063d1a93920b0f7df54a5cbf787b1617100000000000000"
-    "00000000000000000000000000000000000000000000000000000000"
-    "00000000000000000000000000001630140100000fac040100000fac"
-    "040100000fac028000";
-const char kHsMic[] = "024022795224bffca545276c3762686f";
-
-/** The published PMKID target: kind 1, salt = raw ESSID, tag compared against `kPmkidTag`. */
-Target makePmkidTarget() {
-    Target t;
-    t.kind = 1;
-    t.keyver = 0;
-    t.salt.assign(std::begin(kPmkidEssid), std::end(kPmkidEssid) - 1);
-    t.pmkidData.assign(reinterpret_cast<const uint8_t*>("PMK Name"),
-                       reinterpret_cast<const uint8_t*>("PMK Name") + 8);
-    const std::vector<uint8_t> aa = unhex(kPmkidAa);
-    const std::vector<uint8_t> spa = unhex(kPmkidSpa);
-    t.pmkidData.insert(t.pmkidData.end(), aa.begin(), aa.end());
-    t.pmkidData.insert(t.pmkidData.end(), spa.begin(), spa.end());
-    const std::vector<uint8_t> want = unhex(kPmkidTag);
-    std::memcpy(t.expected, want.data(), 16);
-    return t;
-}
-
-/**
- * The published handshake target, with the nonce at 17..49 — i.e. what CrackCore builds
- * for that 22000 line. Built from the constants above so the batch test below verifies
- * the very same target the known-answer check verifies.
- */
-Target makeHandshakeTarget(const std::vector<uint8_t>& eapol) {
-    const std::vector<uint8_t> aa = unhex(kHsAa);
-    const std::vector<uint8_t> spa = unhex(kHsSpa);
-    const std::vector<uint8_t> anonce = unhex(kHsAnonce);
-    const std::vector<uint8_t> snonce(eapol.begin() + 17, eapol.begin() + 49);
-
-    PkeSet set;
-    buildPkeSets(aa, spa, anonce, snonce, set);
-
-    Target t;
-    t.kind = 2;
-    t.keyver = 2;
-    t.salt.assign(std::begin(kHsEssid), std::end(kHsEssid) - 1);
-    const std::vector<uint8_t> want = unhex(kHsMic);
-    std::memcpy(t.expected, want.data(), 16);
-    t.pkes.push_back(set);
-    t.micMsgs.push_back(eapol);
-    return t;
-}
-
-// --- TLV writer mirroring Kotlin's Material.write (v2) ------------------------------
-
-void putU32(std::vector<uint8_t>& out, uint32_t v) {
-    out.push_back(static_cast<uint8_t>(v >> 24));
-    out.push_back(static_cast<uint8_t>(v >> 16));
-    out.push_back(static_cast<uint8_t>(v >> 8));
-    out.push_back(static_cast<uint8_t>(v));
-}
-
-void putVec(std::vector<uint8_t>& out, const std::vector<uint8_t>& v) {
-    putU32(out, static_cast<uint32_t>(v.size()));
-    out.insert(out.end(), v.begin(), v.end());
-}
-
-void putTarget(std::vector<uint8_t>& out, const Target& t) {
-    out.push_back(t.kind);
-    out.push_back(t.keyver);
-    putVec(out, t.salt);
-    out.insert(out.end(), t.expected, t.expected + 16);
-    putVec(out, t.pmkidData);
-    putU32(out, static_cast<uint32_t>(t.pkes.size()));
-    for (const auto& pk : t.pkes) {
-        putVec(out, pk.p100);
-        putVec(out, pk.p102);
-        putVec(out, pk.pstd);
-    }
-    putU32(out, static_cast<uint32_t>(t.micMsgs.size()));
-    for (const auto& m : t.micMsgs) putVec(out, m);
-}
-
-/** The whole v2 blob, exactly as Kotlin's Material.write produces it. */
-std::vector<uint8_t> writeMaterial(const std::vector<Target>& targets) {
-    std::vector<uint8_t> blob;
-    blob.insert(blob.end(), {'M', 'K', 'M', 'T'});
-    putU32(blob, 2);
-    putU32(blob, static_cast<uint32_t>(targets.size()));
-    for (const auto& t : targets) putTarget(blob, t);
-    return blob;
-}
-
-/** One candidate record: big-endian u32 length, then the bytes. */
-void putWord(std::vector<uint8_t>& out, const std::string& word) {
-    putU32(out, static_cast<uint32_t>(word.size()));
-    out.insert(out.end(), word.begin(), word.end());
-}
-
-std::string describePairs(const std::vector<std::pair<int, int>>& pairs) {
-    std::string s;
-    for (const auto& p : pairs) {
-        if (!s.empty()) s += ", ";
-        s += "(" + std::to_string(p.first) + "," + std::to_string(p.second) + ")";
-    }
-    return s;
-}
-
-}  // namespace
 
 /** Returns true when every known-answer check passed; otherwise `fail` says which one. */
 bool self_test(std::string& fail) {
@@ -552,53 +345,13 @@ bool self_test(std::string& fail) {
     // with the primitives already pinned there, because attribution and ordering are what
     // is under test here, not the hashes.
     {
-        auto pmkidTargetFor = [](const std::string& essid, const std::string& password,
-                                 const std::string& aaHex, const std::string& spaHex) {
-            Target t;
-            t.kind = 1;
-            t.keyver = 0;
-            t.salt.assign(essid.begin(), essid.end());
-            const std::vector<uint8_t> aa = unhex(aaHex);
-            const std::vector<uint8_t> spa = unhex(spaHex);
-            t.pmkidData.assign(reinterpret_cast<const uint8_t*>("PMK Name"),
-                               reinterpret_cast<const uint8_t*>("PMK Name") + 8);
-            t.pmkidData.insert(t.pmkidData.end(), aa.begin(), aa.end());
-            t.pmkidData.insert(t.pmkidData.end(), spa.begin(), spa.end());
-            uint8_t pmk[32];
-            pbkdf2_sha1_32(reinterpret_cast<const uint8_t*>(password.data()), password.size(),
-                           t.salt.data(), t.salt.size(), 4096, pmk);
-            uint8_t tag[20];
-            hmac(H_SHA1, pmk, 32, t.pmkidData.data(), t.pmkidData.size(), tag);
-            std::memcpy(t.expected, tag, 16);
-            return t;
-        };
-
-        // A second client of the same network: same salt, so the same PBKDF2 output, and
-        // the group logic has to serve it from that one derivation.
-        const std::string essidA = kPmkidEssid;
-        const std::string essidC = "another-network";
-
-        std::vector<Target> targets;
-        targets.push_back(makePmkidTarget());                              // 0, published
-        targets.push_back(makeHandshakeTarget(unhex(kHsEapol)));           // 1, published
-        targets.push_back(pmkidTargetFor(essidA, kPmkidPassword, "000e9004aaaa", "001132aa64c8"));
-        targets.push_back(pmkidTargetFor(essidC, "alpha-only", "000e90041234", "001132aabbcc"));
-
-        const std::vector<std::string> words = {
-            "hashcat",     // right network, wrong password
-            "alpha-only",  // target 3
-            "hashcat!!",   // near miss everywhere
-            kPmkidPassword, // targets 0, 1 and 2
-            "short",       // below the 8-char WPA minimum: must not upset the packing
-        };
-
-        std::vector<uint8_t> packed;
-        for (const auto& w : words) putWord(packed, w);
-        const std::vector<uint8_t> blob = writeMaterial(targets);
-
-        const std::vector<std::pair<int, int>> want = {
-            {1, 3}, {3, 0}, {3, 1}, {3, 2},
-        };
+        // The very case the Vulkan host test solves, from mk_test_fixtures.h: one set of
+        // targets, one set of candidates, one expected answer, two engines. Duplicating it
+        // per test would mean "the engines agree" was never actually the claim being tested.
+        const BatchCase batch = makeBatchCase();
+        const std::vector<uint8_t>& blob = batch.material;
+        const std::vector<uint8_t>& packed = batch.packedWords;
+        const std::vector<std::pair<int, int>>& want = batch.expect;
 
         // threads=0 means "however many cores this machine reports", so this loop also
         // covers the auto-selected split without the test hard-coding a core count.

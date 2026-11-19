@@ -2,11 +2,12 @@ package com.marauder.mobile
 
 import android.app.Application
 import com.marauder.mobile.capture.CaptureSink
+import com.marauder.mobile.crack.Backend
 import com.marauder.mobile.crack.CrackEngine
 import com.marauder.mobile.crack.JvmCrackEngine
 import com.marauder.mobile.crack.NativeCpuCrackEngine
 import com.marauder.mobile.crack.NativeCrypto
-import com.marauder.mobile.crack.NoopCrackEngine
+import com.marauder.mobile.crack.NativeGpuCrackEngine
 import com.marauder.mobile.data.ArtifactsRepository
 import com.marauder.mobile.data.PcapExtractionBridge
 import com.marauder.mobile.data.SettingsRepository
@@ -40,17 +41,51 @@ class MarauderApp : Application() {
         private set
 
     /**
-     * The cracker backend the UI drives. The native (NDK) engine is used only when it
-     * loaded, agrees on the material protocol and passed its own known-answer test on
-     * this device; otherwise the JVM engine runs and [crackEngineInfo] states why the
-     * native one did not (see `NativeCrypto.unavailableReason`).
+     * The cracker back ends available on this device, created once per kind.
+     *
+     * The native (NDK) CPU engine is used only when it loaded, agrees on the material
+     * protocol and passed its own known-answer test here; otherwise [cpuEngine] is the JVM
+     * engine and [engineReport] says why the native one is not. The GPU engine is created
+     * even when this device has no usable Vulkan driver — asking it is what produces the
+     * refusal message the UI shows — but a GPU run checks the driver itself before spending
+     * any wordlist time on it.
      */
-    var crackEngine: CrackEngine = NoopCrackEngine
-        private set
+    private val engines = mutableMapOf<Backend, CrackEngine>()
 
-    /** Which cracker is live and, when it is not the native one, the reason why. */
-    var crackEngineInfo: String = "not initialised"
-        private set
+    /** Which cracker a given backend selection actually runs, and why, for the UI. */
+    fun engineReport(backend: Backend): List<String> {
+        val cpuReason = NativeCrypto.unavailableReason
+        val cpu = when (backend) {
+            Backend.GPU -> "not used: this run asks the graphics cores"
+            else -> if (cpuReason == null) "native CPU engine (known-answer self-test passed on this device)"
+            else "JVM engine: $cpuReason"
+        }
+        val gpu = when {
+            !NativeCrypto.available -> "unavailable: no native library"
+            !NativeCrypto.gpuPresent -> "unavailable: ${NativeCrypto.gpuUnavailableReason}"
+            NativeCrypto.gpuSelfTestPassed -> "ready: ${NativeCrypto.gpuDeviceName} (known-answer self-test passed)"
+            else -> "available: ${NativeCrypto.gpuDeviceName} — its known-answer test has not run yet on this driver"
+        }
+        return listOf("CPU: $cpu", "GPU: $gpu")
+    }
+
+    /**
+     * The engine for a backend choice. `AUTO` currently means CPU: picking a backend by
+     * measurement would mean running a GPU known-answer probe during start-up, i.e. on the
+     * UI's critical path, and a rate from a driver nobody checked is not worth that. So the
+     * user picks the graphics cores explicitly and the run says which device it used.
+     */
+    fun engineFor(backend: Backend): CrackEngine = engines.getOrPut(backend) {
+        // A GPU selection on a device with no native library still gets a working engine:
+        // the run itself refuses with the driver's own words (backendGap), and the report
+        // line above the button already says the GPU is unavailable. Handing back a
+        // placeholder would hide the real reason behind a generic message.
+        if (backend == Backend.GPU) {
+            if (NativeCrypto.available) NativeGpuCrackEngine() else JvmCrackEngine()
+        } else {
+            if (NativeCrypto.available) NativeCpuCrackEngine() else JvmCrackEngine()
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -61,8 +96,5 @@ class MarauderApp : Application() {
         artifacts = ArtifactsRepository(this)
         wordlists = WordlistsRepository(this)
         artifacts.bridge = PcapExtractionBridge()
-        crackEngineInfo = NativeCrypto.unavailableReason?.let { "JVM engine: $it" }
-            ?: "native CPU engine (known-answer self-test passed on this device)"
-        crackEngine = if (NativeCrypto.available) NativeCpuCrackEngine() else JvmCrackEngine()
     }
 }

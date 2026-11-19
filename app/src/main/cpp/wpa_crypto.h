@@ -126,4 +126,39 @@ bool parse_material(const uint8_t* buf, size_t len, std::vector<Target>& out, st
  * combination `CrackCore.verifyWithPmk` runs, in the same order.
  */
 bool verify_with_pmk(const Target& t, const uint8_t pmk[32]);
+
+// --- batch input handling shared by both back ends ---------------------------------
+//
+// The CPU engine and the Vulkan engine are handed exactly the same two buffers, so they
+// must read them with exactly one implementation. A second parser written for the GPU
+// path is how two back ends end up disagreeing about the same wordlist — the one failure
+// mode this split must not have.
+
+/** One candidate password, pointing into the packed buffer (never copied). */
+struct Candidate {
+    const uint8_t* bytes;
+    size_t len;
+};
+
+/**
+ * Longest candidate the engines accept. WPA-PSK passphrases are 8..63 octets, so a
+ * much longer line is a corrupt batch or a binary file being fed as a wordlist, and
+ * treating it as a password would hide that rather than report it.
+ */
+constexpr size_t kMaxCandidateLength = 256;
+
+/**
+ * Reads candidate records out of a packed buffer: big-endian u32 length, then that many
+ * bytes. Returns false with `err` on any inconsistency instead of reading past the end.
+ */
+bool unpack_candidates(const uint8_t* buf, size_t len, std::vector<Candidate>& out,
+                       std::string& err);
+
+/** Targets sharing one PBKDF2 salt (== raw ESSID): one derivation serves the group. */
+struct SaltGroup {
+    std::vector<uint8_t> salt;
+    std::vector<int> targets;
+};
+
+std::vector<SaltGroup> group_targets_by_salt(const std::vector<Target>& targets);
 }  // namespace mk

@@ -23,14 +23,27 @@ sealed interface CrackEvent {
 enum class Backend { AUTO, CPU, GPU }
 
 /**
- * A backend this build cannot honour, in words the UI shows verbatim, or null when it
- * can. `AUTO` and `CPU` mean the same thing until a GPU engine is linked in; `GPU` is
- * refused rather than quietly run as CPU, because a run labelled "GPU" that used the
- * CPU is a result nobody can act on.
+ * A backend this device cannot honour, in words the UI shows verbatim, or null when it can.
+ *
+ * This is asked at run time rather than decided at build time, because "this build has Vulkan
+ * support compiled in" and "this phone's driver will produce correct PMKs" are different
+ * claims, and only the second one matters. The reasons are quoted verbatim from the native
+ * probe, so the screen says what the driver actually reported instead of a generic shrug.
+ *
+ * `GPU` is refused rather than quietly run as CPU: a run labelled "GPU" whose rate came from
+ * the CPU is a number nobody can act on. `AUTO` and `CPU` have no gap here because they are
+ * served by whichever CPU engine this device can prove — the native one when its known-answer
+ * test passes, the JVM one otherwise — and the crack screen names which one that is.
  */
 fun backendGap(backend: Backend): String? = when (backend) {
-    Backend.GPU -> "GPU (Vulkan) backend is not linked into this build. The CPU engine is what would " +
-        "run; choose CPU to run it explicitly."
+    Backend.GPU -> when {
+        !NativeCrypto.available ->
+            "GPU backend needs the native cracking library, and it is unavailable here: " +
+                (NativeCrypto.unavailableReason ?: "unknown reason")
+        !NativeCrypto.gpuPresent ->
+            "GPU backend refused by this device: ${NativeCrypto.gpuUnavailableReason}"
+        else -> null
+    }
     Backend.AUTO, Backend.CPU -> null
 }
 

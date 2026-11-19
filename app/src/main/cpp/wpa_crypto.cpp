@@ -551,26 +551,10 @@ bool verify_with_pmk(const Target& t, const uint8_t pmk[32]) {
     return false;
 }
 
-// ---- one batch of a crack run ----------------------------------------------------
-//
-// Kept in the core (not in the JNI wrapper) so the logic that can actually go wrong —
-// grouping targets by PBKDF2 salt, reusing one derivation across them, splitting work
-// across cores, ordering results — is the logic the host known-answer test runs. The
-// wrapper is left doing nothing but copying arrays.
+// ---- batch input handling, shared by the CPU and Vulkan back ends ------------------
 
-namespace {
-
-// WPA-PSK passphrases are 8..63 octets; anything much longer is a corrupt batch, and
-// treating it as a candidate would just hide that.
-constexpr size_t kMaxWordLength = 256;
-
-struct Word {
-    const uint8_t* bytes;
-    size_t len;
-};
-
-/** Reads length-prefixed candidate records (big-endian u32 length, then bytes). */
-bool unpackWords(const uint8_t* buf, size_t len, std::vector<Word>& out, std::string& err) {
+bool unpack_candidates(const uint8_t* buf, size_t len, std::vector<Candidate>& out,
+                       std::string& err) {
     // An empty vector's data() may be null, and `null + 0` is not a pointer worth
     // forming, so the no-candidate case returns here rather than through the loop.
     if (len == 0) return true;
@@ -581,24 +565,18 @@ bool unpackWords(const uint8_t* buf, size_t len, std::vector<Word>& out, std::st
         const uint32_t n = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
                            (uint32_t(p[2]) << 8) | p[3];
         p += 4;
-        if (n == 0 || n > kMaxWordLength) {
+        if (n == 0 || n > kMaxCandidateLength) {
             err = "implausible candidate length " + std::to_string(n);
             return false;
         }
         if (p + n > end) { err = "word buffer truncated mid-word"; return false; }
-        out.push_back(Word{ p, n });
+        out.push_back(Candidate{ p, n });
         p += n;
     }
     return true;
 }
 
-/** Targets grouped by PBKDF2 salt (== raw ESSID): one derivation serves the group. */
-struct SaltGroup {
-    std::vector<uint8_t> salt;
-    std::vector<int> targets;
-};
-
-std::vector<SaltGroup> groupBySalt(const std::vector<Target>& targets) {
+std::vector<SaltGroup> group_targets_by_salt(const std::vector<Target>& targets) {
     std::vector<SaltGroup> groups;
     for (size_t i = 0; i < targets.size(); i++) {
         bool placed = false;
@@ -610,7 +588,12 @@ std::vector<SaltGroup> groupBySalt(const std::vector<Target>& targets) {
     return groups;
 }
 
-}  // namespace
+// ---- one batch of a crack run ----------------------------------------------------
+//
+// Kept in the core (not in the JNI wrapper) so the logic that can actually go wrong —
+// grouping targets by PBKDF2 salt, reusing one derivation across them, splitting work
+// across cores, ordering results — is the logic the host known-answer test runs. The
+// wrapper is left doing nothing but copying arrays.
 
 bool crack_batch(const uint8_t* material, size_t materialLen,
                  const uint8_t* packedWords, size_t wordsLen,
@@ -621,15 +604,15 @@ bool crack_batch(const uint8_t* material, size_t materialLen,
     std::vector<Target> targets;
     if (!parse_material(material, materialLen, targets, err)) return false;
 
-    std::vector<Word> words;
-    if (!unpackWords(packedWords, wordsLen, words, err)) return false;
+    std::vector<Candidate> candidates;
+    if (!unpack_candidates(packedWords, wordsLen, candidates, err)) return false;
 
-    const std::vector<SaltGroup> groups = groupBySalt(targets);
+    const std::vector<SaltGroup> groups = group_targets_by_salt(targets);
 
     const unsigned hw = std::thread::hardware_concurrency();
     int workers = threads > 0 ? threads : int(hw > 0 ? hw : 1u);
     if (workers < 1) workers = 1;
-    if (workers > int(words.size())) workers = int(words.size());
+    if (workers > int(candidates.size())) workers = int(candidates.size());
     if (workers < 1) workers = 1;
 
     // One result list per thread: no shared writes in the hot loop. The merged list is
@@ -637,7 +620,7 @@ bool crack_batch(const uint8_t* material, size_t materialLen,
     // happened to land.
     std::vector<std::vector<int>> foundPerThread;
     foundPerThread.resize(size_t(workers));
-    const size_t per = (words.size() + size_t(workers) - 1) / size_t(workers);
+    const size_t per = (candidates.size() + size_t(workers) - 1) / size_t(workers);
 
     // A worker's entire job, as one function both the threaded path and the fallback
     // below call. Two copies of this loop is how one half of them would end up disagreeing
@@ -645,7 +628,7 @@ bool crack_batch(const uint8_t* material, size_t materialLen,
     auto scan = [&](size_t from, size_t to, std::vector<int>& local) {
         uint8_t pmk[32];
         for (size_t w = from; w < to; w++) {
-            const Word& word = words[w];
+            const Candidate& word = candidates[w];
             for (const auto& g : groups) {
                 pbkdf2_sha1_32(word.bytes, word.len, g.salt.data(), g.salt.size(), 4096, pmk);
                 for (int t : g.targets) {
@@ -660,7 +643,7 @@ bool crack_batch(const uint8_t* material, size_t materialLen,
 
     auto worker = [&](int index) {
         const size_t from = size_t(index) * per;
-        scan(from, std::min(words.size(), from + per), foundPerThread[size_t(index)]);
+        scan(from, std::min(candidates.size(), from + per), foundPerThread[size_t(index)]);
     };
 
     std::vector<std::thread> pool;

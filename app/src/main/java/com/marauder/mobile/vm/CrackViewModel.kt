@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.marauder.mobile.MarauderApp
 import com.marauder.mobile.crack.Backend
 import com.marauder.mobile.crack.CrackConfig
+import com.marauder.mobile.crack.CrackEngine
 import com.marauder.mobile.crack.CrackEvent
 import com.marauder.extractor.CrackCore
 import com.marauder.extractor.HashInspection
@@ -60,12 +61,13 @@ data class CrackUiState(
     val aimedBssid: String? = null,
 
     /**
-     * Which cracker this build is running. The native engine is used only when it
-     * loaded, agrees on the target-material protocol and passed its known-answer
-     * self-test on this device; when it did not, this says why, instead of the UI
-     * quietly running a different engine than the one it implies.
+     * Which cracker each backend choice really runs on this device, and why. The native
+     * engine is used only when it loaded, agrees on the target-material protocol and passed
+     * its known-answer self-test here; a GPU run additionally checks the graphics driver
+     * before it spends wordlist time. When a back end is not available this says so,
+     * instead of the UI quietly running something other than what it implies.
      */
-    val engineInfo: String = "",
+    val engineReport: List<String> = emptyList(),
 ) {
     val canRun: Boolean get() = hashLines.isNotEmpty() && selected.isNotEmpty() && !running
     val progress: Float get() = if (totalGuesses <= 0) 0f else (doneGuesses.toFloat() / totalGuesses).coerceIn(0f, 1f)
@@ -81,7 +83,14 @@ data class CrackUiState(
 class CrackViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application as MarauderApp
-    private val engine get() = app.crackEngine
+
+    /**
+     * The engine a running session is actually using. `stop()` and `onCleared()` have to
+     * reach that instance rather than whatever the backend selection says now — if the user
+     * changes the backend while a run is going, stopping it must still stop the run, not
+     * the engine they just switched to.
+     */
+    private var activeEngine: CrackEngine = app.engineFor(Backend.AUTO)
 
     private val _state = MutableStateFlow(CrackUiState())
     val state: StateFlow<CrackUiState> = _state.asStateFlow()
@@ -105,7 +114,7 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
             alreadyCracked = record?.meta?.get("cracked"),
             saeOnly = KeyManagement.saeOnly(record?.meta ?: emptyMap()),
             aimedBssid = record?.meta?.get(ArtifactRecord.TARGET_BSSID),
-            engineInfo = app.crackEngineInfo,
+            engineReport = app.engineReport(_state.value.backend),
             wordlists = wordlists,
             selected = _state.value.selected.filter { name -> wordlists.any { it.fileName == name } }
                 .ifEmpty { listOfNotNull(app.wordlists.preferredWordlist()?.fileName) },
@@ -129,19 +138,25 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setBackend(backend: Backend) {
-        _state.value = _state.value.copy(backend = backend)
+        _state.value = _state.value.copy(
+            backend = backend,
+            engineReport = app.engineReport(backend),
+        )
     }
 
     fun bench() {
         val s = _state.value
         if (s.benching) return
         _state.value = s.copy(benching = true, error = null)
+        val engine = app.engineFor(s.backend)
+        activeEngine = engine
         viewModelScope.launch {
             val rate = runCatching { engine.bench() }.getOrNull()
             _state.value = _state.value.copy(
                 benching = false,
                 benchRate = rate,
-                error = if (rate == null) "No native cracker is linked into this build yet" else null,
+                engineReport = app.engineReport(s.backend),
+                error = if (rate == null) "The ${s.backend.name} backend cannot be measured on this device" else null,
             )
         }
     }
@@ -159,9 +174,14 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         runJob?.cancel()
+        // Bound once per run: the flow below and stop() must talk to the same instance even
+        // if the backend selection changes mid-run.
+        val engine = app.engineFor(s.backend)
+        activeEngine = engine
         _state.value = s.copy(
             running = true,
             doneGuesses = 0L,
+            engineReport = app.engineReport(s.backend),
             // The engine counts words tried (one PBKDF2 per network per word), so the
             // denominator must be words too — otherwise the bar and the ETA lie.
             totalGuesses = s.totalWords,
@@ -196,7 +216,7 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stop() {
-        engine.stop()
+        activeEngine.stop()
         runJob?.cancel()
         runJob = null
         _state.value = _state.value.copy(running = false)
@@ -206,7 +226,7 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
     fun selectedFiles(): List<File> = _state.value.selected.map { app.wordlists.store.file(it) }
 
     override fun onCleared() {
-        engine.stop()
+        activeEngine.stop()
         super.onCleared()
     }
 }

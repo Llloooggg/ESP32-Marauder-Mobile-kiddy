@@ -238,14 +238,17 @@ fun CrackScreen(
                             )
                         }
                     }
-                    // Which cracker this build really runs. A run whose rate came from a
-                    // different engine than the one selected here is a number nobody can
-                    // interpret, so the engine is named instead of assumed.
-                    Text(
-                        state.engineInfo,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MarauderTextDim,
-                    )
+                    // Which cracker each back end really is on this device. A run whose rate
+                    // came from a different engine than the one selected here is a number
+                    // nobody can interpret, and a GPU that the driver cannot prove correct is
+                    // not a GPU at all, so both lines are stated rather than assumed.
+                    state.engineReport.forEach { line ->
+                        Text(
+                            line,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MarauderTextDim,
+                        )
+                    }
                 }
             }
 
