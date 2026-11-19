@@ -58,6 +58,19 @@ class BenchTest {
     }
 
     @Test
+    fun theSentenceAboutWhichEngineRunsFitsOneLineOfAPhoneScreen() {
+        // This sentence states what is about to run. It sits under the backend chooser on a phone,
+        // where a wrapped sentence reads as a paragraph and stops being an answer. The device's own
+        // name is the only variable part, so the budget is checked with a name as long as the ones
+        // real drivers report.
+        val longName = "Adreno (TM) 725"
+        val why = autoBackend(GpuFacts(present = true, deviceName = longName, selfTestReason = null)).why
+        assertTrue("why is ${why.length} chars: $why", why.length <= 62)
+        val unnamed = autoBackend(GpuFacts(present = true, deviceName = null, selfTestReason = null)).why
+        assertTrue("why is ${unnamed.length} chars: $unnamed", unnamed.length <= 62)
+    }
+
+    @Test
     fun autoTakesTheCpuAndSaysWhatIsMissingWhenThereIsNoDevice() {
         val choice = autoBackend(GpuFacts(present = false, deviceName = null, selfTestReason = null))
         assertEquals(Backend.CPU, choice.backend)

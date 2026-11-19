@@ -117,12 +117,14 @@ fun gpuFacts(verdict: ProbeVerdict): GpuFacts = when (verdict) {
 fun autoBackend(gpu: GpuFacts): AutoChoice = when {
     gpu.usable -> AutoChoice(
         Backend.GPU,
-        "${gpu.deviceName ?: "the Vulkan device"} is present and passed its known-answer test, so AUTO " +
-            "runs the graphics cores: the same computation on quicker hardware",
+        // One line on a phone screen, and the sentence that decides what runs has to be readable as
+        // a line: the claim (this driver was asked, it answered correctly, so the graphics run) is all
+        // of it. The reason the rule is this way is in the comment above, not on the screen.
+        "${gpu.deviceName ?: "the Vulkan device"} passed its known-answer test — using GPU",
     )
     else -> AutoChoice(
         Backend.CPU,
-        (gpu.gap ?: "the graphics cores are not usable here") + ", so AUTO runs the CPU engine",
+        (gpu.gap ?: "the graphics cores are not usable here") + ", so the CPU engine runs",
     )
 }
 

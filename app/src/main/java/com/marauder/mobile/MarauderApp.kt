@@ -5,6 +5,7 @@ import com.marauder.mobile.capture.CaptureSink
 import com.marauder.mobile.crack.AutoChoice
 import com.marauder.mobile.crack.Backend
 import com.marauder.mobile.crack.CrackEngine
+import com.marauder.mobile.crack.EngineReport
 import com.marauder.mobile.crack.GpuFacts
 import com.marauder.mobile.crack.GpuCoreClient
 import com.marauder.mobile.crack.JvmCrackEngine
@@ -67,26 +68,13 @@ class MarauderApp : Application() {
      */
     private val engines = mutableMapOf<Backend, CrackEngine>()
 
-    /** Which cracker a given backend selection actually runs, and why, for the UI. */
-    fun engineReport(backend: Backend): List<String> {
-        val cpuReason = NativeCrypto.unavailableReason
-        val cpu = when (backend) {
-            Backend.GPU -> "not used: this run asks the graphics cores"
-            Backend.AUTO -> "used only if the graphics cores cannot be proven correct on this device"
-            else -> if (cpuReason == null) "native CPU engine (known-answer self-test passed on this device)"
-            else "JVM engine: $cpuReason"
-        }
-        val gpu = when (val asked = gpuCore.lastVerdict()) {
-            null -> "not asked yet: this app says nothing about the graphics cores of a device it has " +
-                "not asked, and asking it is what the first GPU run does"
-            is ProbeVerdict.Passed ->
-                "ready: ${asked.deviceName} (known-answer passed, asked in a separate process)"
-            is ProbeVerdict.Refused ->
-                "unusable: ${asked.reason}" + (asked.deviceName?.let { " [$it]" } ?: "")
-            is ProbeVerdict.Died -> "unusable: ${asked.words}"
-        }
-        return listOf("CPU: $cpu", "GPU: $gpu")
-    }
+    /**
+     * Which cracker a given backend selection actually runs, and why, for the UI. The wording lives in
+     * [EngineReport] - it is a rule about what may be claimed, and the sentences have a length budget
+     * checked by `EngineReportTest`, so they do not drift back into paragraphs.
+     */
+    fun engineReport(backend: Backend): List<String> =
+        EngineReport.lines(backend, gpuCore.lastVerdict(), NativeCrypto.unavailableReason)
 
     /**
      * The graphics facts behind a backend choice, read from this device's driver. The asking is real

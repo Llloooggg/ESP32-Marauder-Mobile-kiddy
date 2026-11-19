@@ -161,6 +161,39 @@ fun ArtifactDetailScreen(
                 if (!cracked.isNullOrBlank()) StatChip("CRACKED", cracked, Success)
             }
 
+            // The reason this screen was opened, above the fold. It used to sit under a full screen of
+            // internal counters, so the thing a person came for - "crack this" - was below the scroll
+            // and the raw provenance was not.
+            SectionLabel("What to do with it")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Big(
+                    label = if (analysing) "Analysing…" else "Extract hashes",
+                    icon = Icons.Filled.Analytics,
+                    tint = MarauderCyan,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    analysing = true
+                    ioScope.launch {
+                        val result = vm.analyzeArtifactSuspending(artifactName)
+                        analysing = false
+                        reload()
+                        when {
+                            result == null -> vm.queueMessage("The hash extractor is not wired into this build yet")
+                            !result.usable -> vm.queueMessage(result.note ?: "No PMKID or WPA handshake in this capture")
+                            else -> vm.queueMessage("${result.hashLines.size} hash line(s) ready — PMKID ${result.pmkidCount}, handshakes ${result.handshakeSets}")
+                        }
+                    }
+                }
+                val canCrack = record.hashState == ArtifactRecord.HASH_DONE
+                Big(
+                    label = "Crack",
+                    icon = Icons.Filled.VpnKey,
+                    tint = if (canCrack) Success else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                    enabled = canCrack,
+                ) { onOpenCrack(artifactName) }
+            }
+
             // The BSSID the operation was pinned to vs the BSSIDs the credential
             // material in this file belongs to. They can differ — the board hears every
             // network on the channel — and when they do, that has to be stated here
@@ -275,80 +308,84 @@ fun ArtifactDetailScreen(
             }
 
             if (record.meta.isNotEmpty()) {
+                // The raw table is this app's own bookkeeping. It is worth keeping - it is how a
+                // capture is argued about later - but a screen of internal keys buries the facts that
+                // decide what to do next. So the few that decide it are said plainly, and the rest is
+                // one tap away rather than removed: hiding evidence is not our call to make silently.
                 SectionLabel("Provenance")
-                Surface(
-                    shape = RoundedCornerShape(11.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        val essids = record.meta.keys.count { it.startsWith(ArtifactRecord.SSID_META) }
-                        record.meta.toSortedMap().forEach { (key, value) ->
-                            if (key == "path" || key.startsWith(ArtifactRecord.SSID_META)) return@forEach
-                            Row {
-                                Text(
-                                    key,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MarauderTextDim,
-                                    modifier = Modifier.padding(end = 8.dp),
-                                )
-                                Text(
-                                    value,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                )
+                val frames = record.meta["frames"]
+                val eapol = record.meta["eapolFrames"]
+                val fromAp = record.meta["eapol_ap"]
+                val fromClient = record.meta["eapol_client"]
+                val how = record.meta["command"]
+                val summary = buildList {
+                    frames?.let { add("$it frames") }
+                    if (eapol != null) {
+                        add(
+                            "$eapol EAPOL" +
+                                if (fromAp != null && fromClient != null) " ($fromAp from the AP, $fromClient from the client)" else ""
+                        )
+                    }
+                    how?.let { add("captured with: $it") }
+                }
+                if (summary.isNotEmpty()) {
+                    Text(
+                        summary.joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MarauderTextDim,
+                    )
+                }
+                var showRaw by remember(artifactName) { mutableStateOf(false) }
+                TextButton(onClick = { showRaw = !showRaw }) {
+                    Text(if (showRaw) "Hide the raw fields" else "Show the raw fields")
+                }
+                if (showRaw) {
+                    Surface(
+                        shape = RoundedCornerShape(11.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            val essids = record.meta.keys.count { it.startsWith(ArtifactRecord.SSID_META) }
+                            record.meta.toSortedMap().forEach { (key, value) ->
+                                if (key == "path" || key.startsWith(ArtifactRecord.SSID_META)) return@forEach
+                                Row {
+                                    Text(
+                                        key,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MarauderTextDim,
+                                        modifier = Modifier.padding(end = 8.dp),
+                                    )
+                                    Text(
+                                        value,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                }
                             }
-                        }
-                        if (essids > 0) {
-                            Row {
-                                Text(
-                                    "ssids",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MarauderTextDim,
-                                    modifier = Modifier.padding(end = 8.dp),
-                                )
-                                Text(
-                                    "$essids kept from the scan list (used as the crack salt when the capture has no beacon)",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MarauderTextDim,
-                                )
+                            if (essids > 0) {
+                                Row {
+                                    Text(
+                                        "ssids",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MarauderTextDim,
+                                        modifier = Modifier.padding(end = 8.dp),
+                                    )
+                                    Text(
+                                        "$essids kept from the scan list (used as the crack salt when the capture has no beacon)",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MarauderTextDim,
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
 
-            SectionLabel("Actions")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Big(
-                    label = if (analysing) "Analysing…" else "Extract hashes",
-                    icon = Icons.Filled.Analytics,
-                    tint = MarauderCyan,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    analysing = true
-                    ioScope.launch {
-                        val result = vm.analyzeArtifactSuspending(artifactName)
-                        analysing = false
-                        reload()
-                        when {
-                            result == null -> vm.queueMessage("The hash extractor is not wired into this build yet")
-                            !result.usable -> vm.queueMessage(result.note ?: "No PMKID or WPA handshake in this capture")
-                            else -> vm.queueMessage("${result.hashLines.size} hash line(s) ready — PMKID ${result.pmkidCount}, handshakes ${result.handshakeSets}")
-                        }
-                    }
-                }
-                val canCrack = record.hashState == ArtifactRecord.HASH_DONE
-                Big(
-                    label = "Crack",
-                    icon = Icons.Filled.VpnKey,
-                    tint = if (canCrack) Success else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                    enabled = canCrack,
-                ) { onOpenCrack(artifactName) }
-            }
-
+            // File chores, deliberately below the job the capture was opened for.
+            SectionLabel("Keep the file")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Big(
                     label = "Share",
