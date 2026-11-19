@@ -119,6 +119,7 @@ fun HomeScreen(
     val info by vm.info.collectAsState()
     val boardChannel by vm.boardChannel.collectAsState()
     val boardHop by vm.boardChanHop.collectAsState()
+    val boardSilence by vm.boardSilence.collectAsState()
     val mission by vm.activeMission.collectAsState()
     val darkTheme by vm.darkTheme.collectAsState()
     val connected = connStatus == UsbSerialManager.Status.CONNECTED
@@ -234,6 +235,7 @@ fun HomeScreen(
             item {
                 BoardCard(
                     info = info,
+                    silent = boardSilence,
                     channel = boardChannel,
                     chanHop = boardHop,
                     onOpenFlash = onOpenFlash,
@@ -356,6 +358,7 @@ private fun MissionCard(mission: Mission, onOpen: () -> Unit, onStop: () -> Unit
 @Composable
 private fun BoardCard(
     info: DeviceMessage.Info?,
+    silent: String?,
     channel: Int?,
     chanHop: Boolean?,
     onOpenFlash: () -> Unit,
@@ -373,15 +376,21 @@ private fun BoardCard(
                 Spacer(Modifier.size(8.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        info?.board?.ifBlank { "Unknown board" } ?: "Reading board…",
+                        when {
+                            info != null -> info.board.ifBlank { "Unknown board" }
+                            silent != null -> "Port open, board silent"
+                            else -> "Reading board…"
+                        },
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
-                        info?.let { "firmware ${it.fw} · proto ${it.proto}" } ?: "waiting for jsoninfo",
+                        info?.let { "firmware ${it.fw} · proto ${it.proto}" }
+                            ?: silent
+                            ?: "waiting for jsoninfo",
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
-                        color = MarauderTextDim,
+                        color = if (silent != null) Warning else MarauderTextDim,
                     )
                 }
             }
@@ -405,6 +414,11 @@ private fun BoardCard(
             // and "this board is sitting on 7" — and an empty list looks exactly like the first one.
             Text(
                 when {
+                    // Nothing has come back on this port, so there is no radio state to report — and
+                    // saying so is the difference between a board that is quiet and a board that is
+                    // not reachable at all.
+                    silent != null -> "radio: unknown — the port is open but the board has sent nothing, " +
+                        "so this app cannot say what its radio is doing"
                     channel == null -> "radio: the board has not said where its radio sits yet"
                     chanHop == false ->
                         "radio: sitting on channel $channel and its own ChanHop setting is off — it hears " +
@@ -415,7 +429,7 @@ private fun BoardCard(
                 },
                 style = MaterialTheme.typography.labelSmall,
                 fontFamily = FontFamily.Monospace,
-                color = if (channel != null && chanHop == false) Warning else MarauderTextDim,
+                color = if (silent != null || (channel != null && chanHop == false)) Warning else MarauderTextDim,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ActionTile("Flash firmware", Icons.Filled.SystemUpdate, CatDevice, onClick = onOpenFlash)

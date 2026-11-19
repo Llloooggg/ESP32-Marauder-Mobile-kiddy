@@ -189,7 +189,10 @@ class UsbSerialManager(context: Context) {
                 ioManager = io
                 _connectedName.value = deviceLabel(driver.device)
                 _status.value = Status.CONNECTED
-                emitEvent("Connected to ${deviceLabel(driver.device)}")
+                // What just opened is the phone's side of the link, not a board that is ready: the
+                // first proof of the board is its answer to `jsoninfo`, and the silence watchdog in
+                // the ViewModel says so when that answer does not come.
+                emitEvent("Port open: ${deviceLabel(driver.device)} — waiting for the board to answer")
             } catch (e: Exception) {
                 cleanup()
                 _status.value = Status.DISCONNECTED

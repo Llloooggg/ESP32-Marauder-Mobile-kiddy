@@ -10,6 +10,7 @@ import com.marauder.mobile.data.ArtifactRecord
 import com.marauder.mobile.data.ArtifactsRepository
 import com.marauder.mobile.data.BoardRadio
 import com.marauder.mobile.data.BoardSetting
+import com.marauder.mobile.data.BoardSilence
 import com.marauder.mobile.data.CaptureDiagnosis
 import com.marauder.mobile.data.CaptureOps
 import com.marauder.mobile.data.GpxAssembler
@@ -339,6 +340,15 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
 
     private var consoleSeq = 0L
     private var sessionJob: Job? = null
+    private var silenceJob: Job? = null
+
+    /**
+     * Everything the board has sent since this connection opened, and the questions the app asked it.
+     * The pair is what turns "no output" into a statement a user can check: an open port with zero
+     * bytes back after several asks is a link the board is not speaking on, and the counts say so.
+     */
+    private var linesFromBoard = 0
+    private var asksSinceConnect = 0
     private var liveJob: Job? = null
     private var flashJob: Job? = null
 
@@ -661,6 +671,16 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
      * and looks like an empty night.
      */
     val boardChannel: StateFlow<Int?> = _boardChannel.asStateFlow()
+
+    /**
+     * Set while the port is open but the board has not answered a single question, with the sentence
+     * that says what was asked and what could make a port mute. Null the moment any line arrives, and
+     * on disconnect. This is the one board fact worth reporting before the first answer: without it
+     * the UI's only statement is "Connected", which describes the phone's USB stack and says nothing
+     * about the board.
+     */
+    private val _boardSilence = MutableStateFlow<String?>(null)
+    val boardSilence: StateFlow<String?> = _boardSilence.asStateFlow()
 
     private var channelSink: StringBuilder? = null
     private var channelArmed = false
@@ -2168,6 +2188,10 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
 
     // --- Incoming ------------------------------------------------------------
     private fun onLine(line: String) {
+        // Anything at all out of the board ends the silence: one byte is proof the link works, even
+        // when everything after it is wrong.
+        linesFromBoard++
+        if (_boardSilence.value != null) _boardSilence.value = null
         when (val parsed = LineParser.parse(line)) {
             is ParsedLine.Console -> if (parsed.raw.isNotBlank()) {
                 // Both plain-text reads (settings dump, channel answer) collect their own lines;
@@ -2328,15 +2352,22 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
     // --- Session lifecycle ---------------------------------------------------
     private fun startSession() {
         sessionJob?.cancel()
+        silenceJob?.cancel()
+        linesFromBoard = 0
+        asksSinceConnect = 0
+        _boardSilence.value = null
         sessionJob = viewModelScope.launch {
             // A fresh connection may pulse the ESP32 auto-reset line; give it time
             // to finish booting, then handshake (twice, in case the first is lost).
             delay(350)
+            asksSinceConnect++
             usb.send("jsoninfo")
             delay(1300)
             if (!isActive) return@launch
+            asksSinceConnect++
             usb.send("jsoninfo")
             delay(200)
+            asksSinceConnect++
             usb.send("jsonstatus")
             // Ask the board what its radio is doing, in the board's own words, before anything is
             // aimed at a channel. Both facts are states the app did not choose: `ChanHop` is a
@@ -2349,16 +2380,39 @@ class MarauderViewModel(application: Application) : AndroidViewModel(application
                 delay(SETTINGS_READ_MS + 400)
                 if (usb.status.value == UsbSerialManager.Status.CONNECTED) requestBoardChannel()
             }
+            watchForSilence()
             while (isActive && usb.status.value == UsbSerialManager.Status.CONNECTED) {
                 delay(2500)
+                asksSinceConnect++
                 usb.send("jsonstatus")
             }
+        }
+    }
+
+    /**
+     * Report a port that opened and stayed mute, once, while the connection lasts. Any line from the
+     * board clears it, so a board that was merely slow to boot is never left accused.
+     */
+    private fun watchForSilence() {
+        silenceJob = viewModelScope.launch {
+            delay(BoardSilence.GRACE_MS)
+            if (!isActive || usb.status.value != UsbSerialManager.Status.CONNECTED) return@launch
+            if (!BoardSilence.isSilent(linesFromBoard, BoardSilence.GRACE_MS)) return@launch
+            val why = BoardSilence.explain(asksSinceConnect, usb.baud, BoardSilence.GRACE_MS)
+            _boardSilence.value = why
+            appendConsole("No answer from the board: $why", LineKind.SYSTEM)
+            _snackbar.tryEmit("The board is not answering on this port")
         }
     }
 
     private fun onDisconnected() {
         _info.value = null
         _deviceStatus.value = null
+        // The silence verdict belonged to a link that no longer exists; the app cannot say anything
+        // about a board it is no longer talking to, in either direction.
+        _boardSilence.value = null
+        silenceJob?.cancel()
+        silenceJob = null
         // The board's radio state was what it reported over this link; without the link there is
         // nothing to report it, so the app stops claiming to know it.
         _boardChannel.value = null
