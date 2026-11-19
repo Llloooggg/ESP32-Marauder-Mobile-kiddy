@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.marauder.mobile.crack.Backend
+import com.marauder.mobile.crack.MeasuredRate
 import com.marauder.mobile.data.KeyManagement
 import com.marauder.mobile.data.Wordlist
 import com.marauder.mobile.ui.components.SectionLabel
@@ -229,7 +230,7 @@ fun CrackScreen(
                             Choice(
                                 label = backend.name,
                                 hint = when (backend) {
-                                    Backend.AUTO -> "fastest available"
+                                    Backend.AUTO -> "graphics cores when the driver proves them"
                                     Backend.CPU -> "phone cores"
                                     Backend.GPU -> "graphics cores"
                                 },
@@ -247,6 +248,16 @@ fun CrackScreen(
                             line,
                             style = MaterialTheme.typography.labelSmall,
                             color = MarauderTextDim,
+                        )
+                    }
+                    // What AUTO actually settled on for this run, in the words the driver gate
+                    // produced. Stated only once it has been asked, because before that the app would
+                    // be naming an engine it has not checked.
+                    state.autoWhy?.let { why ->
+                        Text(
+                            why,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MarauderCyan,
                         )
                     }
                 }
@@ -477,7 +488,7 @@ private fun RunButton(running: Boolean, enabled: Boolean, onStart: () -> Unit, o
 }
 
 @Composable
-private fun BenchButton(rate: Long?, busy: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun BenchButton(rate: MeasuredRate?, busy: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
         onClick = onClick,
         enabled = !busy,
@@ -496,15 +507,17 @@ private fun BenchButton(rate: Long?, busy: Boolean, onClick: () -> Unit, modifie
             Text(
                 when {
                     busy -> "Benching…"
-                    rate != null -> "${formatCount(rate)} h/s"
+                    rate != null -> "${formatCount(rate.guessesPerSecond)} h/s"
                     else -> "Run bench"
                 },
                 style = MaterialTheme.typography.labelLarge,
                 color = MarauderCyan,
                 fontWeight = FontWeight.SemiBold,
             )
+            // The sample the rate came from is printed next to it: a throughput figure whose size is
+            // invisible cannot be judged, and this one is what the ETA is extrapolated from.
             Text(
-                "engine check",
+                rate?.let { "over ${it.samples} guesses" } ?: "engine check",
                 style = MaterialTheme.typography.labelSmall,
                 color = MarauderTextDim,
             )

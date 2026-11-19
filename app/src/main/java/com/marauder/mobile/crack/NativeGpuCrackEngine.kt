@@ -41,18 +41,21 @@ class NativeGpuCrackEngine : CrackEngine {
 
     private val stopRequested = AtomicBoolean(false)
 
-    override suspend fun bench(): Long? = withContext(Dispatchers.Default) {
+    override suspend fun bench(): MeasuredRate? = withContext(Dispatchers.Default) {
         if (!NativeCrypto.gpuPresent) return@withContext null
         // A driver that disagrees with the CPU core cannot produce a meaningful rate either,
         // so the gate is the same one a real run uses.
         if (NativeCrypto.gpuSelfTest() != null) return@withContext null
         val target = CrackCore.parse(BENCH_HASH) ?: return@withContext null
         val index = listOf(NativeCrypto.TargetIndex(0, target.material()))
-        val tries = (0 until 20).map { "bench-guess-$it" }
+        // The first batches go to setting up the driver's command buffers, not to hashing; timing
+        // them is what produced a GPU "rate" that no real run ever matched.
+        val warmup = (0 until BENCH_WARMUP).map { "warmup-guess-$it" }
+        warmup.chunked(GPU_BATCH).forEach { NativeCrypto.gpuCrackBatch(index, it) }
+        val tries = (0 until BENCH_GUESSES).map { "bench-guess-$it" }
         val t0 = System.nanoTime()
         tries.chunked(GPU_BATCH).forEach { NativeCrypto.gpuCrackBatch(index, it) }
-        val dt = System.nanoTime() - t0
-        tries.size.toLong() * 1_000_000_000L / dt.coerceAtLeast(1L)
+        measuredRate(tries.size, System.nanoTime() - t0)
     }
 
     override fun run(config: CrackConfig): Flow<CrackEvent> = flow {

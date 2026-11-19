@@ -32,7 +32,9 @@ class JvmCrackEngineTest {
         val rate = JvmCrackEngine().bench()
         assertNotNull(rate)
         // 4096 PBKDF2 iterations: any working JVM sits well above 10 guesses/s.
-        assertTrue("bench rate $rate too low", rate!! > 10)
+        assertTrue("bench rate ${rate!!.guessesPerSecond} too low", rate.guessesPerSecond > 10)
+        // The number must come from a sample big enough to be about the hash, not the warm-up.
+        assertEquals(BENCH_GUESSES, rate.samples)
     }
 
     @Test

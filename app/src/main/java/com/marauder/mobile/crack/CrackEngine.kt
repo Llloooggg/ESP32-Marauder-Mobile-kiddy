@@ -66,8 +66,17 @@ data class CrackConfig(
 )
 
 interface CrackEngine {
-    /** Quick throughput probe. Returns null when no native engine is available. */
-    suspend fun bench(): Long?
+    /**
+     * Timed throughput on this device: the same known-answer target the real loop uses, over
+     * [BENCH_GUESSES] guesses. Null when this engine cannot produce a number here (no native
+     * library, no Vulkan driver, or a driver that failed its own known-answer test).
+     *
+     * The sample is deliberately bigger than it used to be. PBKDF2's 4096 rounds are the whole
+     * cost of a guess and the work is linear, so a timed rate can be extended to a whole wordlist —
+     * but only if the sample measures the hash and not the driver's launch overhead or the JVM's
+     * warm-up, which is what a twenty-guess figure mostly measured.
+     */
+    suspend fun bench(): MeasuredRate?
 
     /**
      * Start (or restart) a session; the returned flow emits until [Finished].
@@ -82,7 +91,7 @@ interface CrackEngine {
 
 /** Placeholder engine used while the native engine is being built. */
 object NoopCrackEngine : CrackEngine {
-    override suspend fun bench(): Long? = null
+    override suspend fun bench(): MeasuredRate? = null
 
     override fun run(config: CrackConfig): kotlinx.coroutines.flow.Flow<CrackEvent> =
         kotlinx.coroutines.flow.flow {

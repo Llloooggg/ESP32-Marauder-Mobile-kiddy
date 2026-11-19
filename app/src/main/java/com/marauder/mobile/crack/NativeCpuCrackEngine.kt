@@ -37,17 +37,18 @@ class NativeCpuCrackEngine(
 
     private val stopRequested = AtomicBoolean(false)
 
-    override suspend fun bench(): Long? = withContext(Dispatchers.Default) {
+    override suspend fun bench(): MeasuredRate? = withContext(Dispatchers.Default) {
         if (!NativeCrypto.available) return@withContext null
         val target = CrackCore.parse(BENCH_HASH) ?: return@withContext null
         val index = listOf(NativeCrypto.TargetIndex(0, target.material()))
         // One thread, so this is comparable with the JVM engine's figure rather than a
-        // measure of how many cores the phone happens to have.
-        val tries = (0 until 20).map { "bench-guess-$it" }
+        // measure of how many cores the phone happens to have. Same target, same number of
+        // guesses, same batches as the real loop: two engines whose numbers cannot be compared
+        // are two numbers nobody can choose between.
+        val tries = (0 until BENCH_GUESSES).map { "bench-guess-$it" }
         val t0 = System.nanoTime()
         tries.chunked(NATIVE_BATCH).forEach { NativeCrypto.crackBatch(index, it, 1) }
-        val dt = System.nanoTime() - t0
-        tries.size.toLong() * 1_000_000_000L / dt.coerceAtLeast(1L)
+        measuredRate(tries.size, System.nanoTime() - t0)
     }
 
     override fun run(config: CrackConfig): Flow<CrackEvent> = flow {

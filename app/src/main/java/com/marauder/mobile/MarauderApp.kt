@@ -2,9 +2,12 @@ package com.marauder.mobile
 
 import android.app.Application
 import com.marauder.mobile.capture.CaptureSink
+import com.marauder.mobile.crack.AutoChoice
 import com.marauder.mobile.crack.Backend
 import com.marauder.mobile.crack.CrackEngine
+import com.marauder.mobile.crack.GpuFacts
 import com.marauder.mobile.crack.JvmCrackEngine
+import com.marauder.mobile.crack.autoBackend
 import com.marauder.mobile.crack.NativeCpuCrackEngine
 import com.marauder.mobile.crack.NativeCrypto
 import com.marauder.mobile.crack.NativeGpuCrackEngine
@@ -57,6 +60,7 @@ class MarauderApp : Application() {
         val cpuReason = NativeCrypto.unavailableReason
         val cpu = when (backend) {
             Backend.GPU -> "not used: this run asks the graphics cores"
+            Backend.AUTO -> "used only if the graphics cores cannot be proven correct on this device"
             else -> if (cpuReason == null) "native CPU engine (known-answer self-test passed on this device)"
             else "JVM engine: $cpuReason"
         }
@@ -70,10 +74,31 @@ class MarauderApp : Application() {
     }
 
     /**
-     * The engine for a backend choice. `AUTO` currently means CPU: picking a backend by
-     * measurement would mean running a GPU known-answer probe during start-up, i.e. on the
-     * UI's critical path, and a rate from a driver nobody checked is not worth that. So the
-     * user picks the graphics cores explicitly and the run says which device it used.
+     * The graphics facts behind a backend choice, read from the driver. [NativeCrypto.gpuSelfTest]
+     * does real GPU work, so this must not run on the UI thread — [pickAuto] is called from a worker.
+     */
+    fun gpuFacts(): GpuFacts = GpuFacts(
+        present = NativeCrypto.gpuPresent,
+        deviceName = NativeCrypto.gpuDeviceName.takeIf { it.isNotEmpty() },
+        selfTestReason = if (NativeCrypto.available && NativeCrypto.gpuPresent) NativeCrypto.gpuSelfTest() else null,
+    )
+
+    /**
+     * What `AUTO` runs on this device right now, and the sentence that says why. The graphics cores
+     * are taken whenever their driver is present and passes the known-answer test — same computation,
+     * quicker hardware — and the CPU engine is taken when they are not, with the driver's reason
+     * shown instead of a silent fallback.
+     *
+     * Reading the driver's verdict does real GPU work, so this must be called from a worker thread,
+     * not while the screen is being drawn.
+     */
+    fun pickAuto(): AutoChoice = autoBackend(gpuFacts())
+
+    /**
+     * The engine for a backend choice. `AUTO` is resolved to a concrete backend by [pickAuto] before
+     * it gets here, so the run always says which engine it settled on; a bare `AUTO` (a fresh
+     * session that never measured) stays on the CPU engine, the one this build can prove without a
+     * graphics driver.
      */
     fun engineFor(backend: Backend): CrackEngine = engines.getOrPut(backend) {
         // A GPU selection on a device with no native library still gets a working engine:

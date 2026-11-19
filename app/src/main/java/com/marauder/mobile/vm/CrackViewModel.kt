@@ -8,16 +8,19 @@ import com.marauder.mobile.crack.Backend
 import com.marauder.mobile.crack.CrackConfig
 import com.marauder.mobile.crack.CrackEngine
 import com.marauder.mobile.crack.CrackEvent
+import com.marauder.mobile.crack.MeasuredRate
 import com.marauder.extractor.CrackCore
 import com.marauder.extractor.HashInspection
 import com.marauder.mobile.data.ArtifactRecord
 import com.marauder.mobile.data.KeyManagement
 import com.marauder.mobile.data.Wordlist
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /** Everything the crack screen shows about one attempt. */
@@ -34,8 +37,15 @@ data class CrackUiState(
     val selected: List<String> = emptyList(),
 
     val backend: Backend = Backend.AUTO,
-    val benchRate: Long? = null,
+    val benchRate: MeasuredRate? = null,
     val benching: Boolean = false,
+
+    /**
+     * What `AUTO` settled on for the current run, in words. Only set while a run (or a measurement)
+     * resolved it, because reading the driver's verdict is GPU work that must not happen in a click
+     * handler — which also means the app never states an engine it has not just checked.
+     */
+    val autoWhy: String? = null,
 
     val running: Boolean = false,
     val doneGuesses: Long = 0L,
@@ -148,15 +158,23 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
         val s = _state.value
         if (s.benching) return
         _state.value = s.copy(benching = true, error = null)
-        val engine = app.engineFor(s.backend)
-        activeEngine = engine
         viewModelScope.launch {
+            // Measuring the engine that will actually run, which for `AUTO` means resolving it first
+            // — on a worker thread, because the answer comes from the graphics driver. A rate for an
+            // engine the run would not have used is a number the ETA then cannot keep.
+            val resolved = if (s.backend == Backend.AUTO) {
+                val choice = withContext(Dispatchers.IO) { app.pickAuto() }
+                _state.value = _state.value.copy(autoWhy = choice.why)
+                choice.backend
+            } else s.backend
+            val engine = app.engineFor(resolved)
+            activeEngine = engine
             val rate = runCatching { engine.bench() }.getOrNull()
             _state.value = _state.value.copy(
                 benching = false,
                 benchRate = rate,
-                engineReport = app.engineReport(s.backend),
-                error = if (rate == null) "The ${s.backend.name} backend cannot be measured on this device" else null,
+                engineReport = app.engineReport(resolved),
+                error = if (rate == null) "The $resolved engine cannot be measured on this device" else null,
             )
         }
     }
@@ -174,10 +192,6 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         runJob?.cancel()
-        // Bound once per run: the flow below and stop() must talk to the same instance even
-        // if the backend selection changes mid-run.
-        val engine = app.engineFor(s.backend)
-        activeEngine = engine
         _state.value = s.copy(
             running = true,
             doneGuesses = 0L,
@@ -191,7 +205,20 @@ class CrackViewModel(application: Application) : AndroidViewModel(application) {
             error = null,
         )
         runJob = viewModelScope.launch {
-            engine.run(config).collect { event ->
+            // `AUTO` is resolved here rather than in the click handler: reading what the graphics
+            // driver can really do is real GPU work. The sentence it returns is kept, so the screen
+            // can state which engine this run is using instead of implying it from the chip the user
+            // happened to leave selected.
+            val resolved = if (s.backend == Backend.AUTO) {
+                val choice = withContext(Dispatchers.IO) { app.pickAuto() }
+                _state.value = _state.value.copy(autoWhy = choice.why)
+                choice.backend
+            } else s.backend
+            // Bound once per run: the flow below and stop() must talk to the same instance even
+            // if the backend selection changes mid-run.
+            val engine = app.engineFor(resolved)
+            activeEngine = engine
+            engine.run(config.copy(backend = resolved)).collect { event ->
                 when (event) {
                     is CrackEvent.Progress -> _state.value = _state.value.copy(
                         doneGuesses = event.done,

@@ -27,15 +27,16 @@ class JvmCrackEngine : CrackEngine {
 
     private val stopRequested = AtomicBoolean(false)
 
-    override suspend fun bench(): Long? = withContext(Dispatchers.Default) {
+    override suspend fun bench(): MeasuredRate? = withContext(Dispatchers.Default) {
         // Timing the PBKDF2 against hashcat's own self-test target — the exact
-        // per-guess cost the cracking loop pays.
+        // per-guess cost the cracking loop pays. The warm-up is not timed: the JVM compiles
+        // this loop while it runs, and a rate that includes the interpreted part is a rate for
+        // the first guesses only, which is exactly the number an ETA would get wrong.
         val target = CrackCore.parse(BENCH_HASH) ?: return@withContext null
-        val tries = 20
+        repeat(BENCH_WARMUP) { target.verify("warmup-guess-$it") }
         val t0 = System.nanoTime()
-        repeat(tries) { target.verify("bench-guess-$it") }
-        val dt = System.nanoTime() - t0
-        tries.toLong() * 1_000_000_000L / dt.coerceAtLeast(1L)
+        repeat(BENCH_GUESSES) { target.verify("bench-guess-$it") }
+        measuredRate(BENCH_GUESSES, System.nanoTime() - t0)
     }
 
     override fun run(config: CrackConfig): Flow<CrackEvent> = flow {
